@@ -412,6 +412,7 @@ void Model<TF>::exec()
                 aerosol   ->update_time_dependent(*timeloop);
                 background->update_time_dependent(*timeloop);
                 buffer    ->update_time_dependent(*timeloop);
+                ib        ->update_time_dependent(*timeloop);
 
                 // Set the cyclic BCs of the prognostic 3D fields.
                 boundary->set_prognostic_cyclic_bcs();
@@ -426,6 +427,7 @@ void Model<TF>::exec()
 
                 // Get the viscosity to be used in diffusion.
                 diff->exec_viscosity(*stats, *thermo);
+                ib->exec_strain_most();
 
                 // Determine the time step.
                 set_time_step();
@@ -453,6 +455,9 @@ void Model<TF>::exec()
                 boundary->exec(*thermo, *radiation, *microphys, *timeloop);
                 boundary->set_ghost_cells();
 
+                // Monin-Obukhov wall model
+                ib->exec_wall_model(*thermo, *stats);
+
                 // Set the immersed boundary conditions for scalars.
                 ib->exec_scalars();
 
@@ -469,6 +474,12 @@ void Model<TF>::exec()
                 // Calculate the diffusion tendency.
                 diff->exec(*stats);
                 check("diff");
+
+                // The IB surface exchange for scalars, as a source term.
+                ib->exec_scalar_flux(*thermo, *stats);
+                // the tangential stress, same pattern, on the u and v
+                ib->exec_momentum_flux(*stats);
+                check("ib_scalar_flux");
 
                 // Calculate the tendency due to damping in the buffer layer.
                 buffer->exec(*stats);
@@ -503,6 +514,10 @@ void Model<TF>::exec()
                 pres->exec(timeloop->get_sub_time_step(), *stats);
                 check("press");
                 boundary->set_ghost_cells_w(Boundary_w_type::Normal_type);
+
+                // Wall-normal velocity back to zero on every wall face,
+                // so advection cannot carry anything through the terrain.
+                ib->exec_impermeable();
 
                 // Apply the limiter as the last tendency.
                 limiter->exec(timeloop->get_sub_time_step(), *stats);

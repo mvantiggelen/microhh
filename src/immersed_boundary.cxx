@@ -23,6 +23,7 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <map> 
 
 #include <constants.h>
 #include "master.h"
@@ -30,6 +31,10 @@
 #include "fields.h"
 #include "input.h"
 #include "immersed_boundary.h"
+#include "timeloop.h"
+#include "thermo.h"
+#include "monin_obukhov.h"
+#include "boundary_surface_kernels.h"
 #include "fast_math.h"
 #include "stats.h"
 #include "cross.h"
@@ -101,7 +106,6 @@ namespace
                      f1y * (f0x * dem[ij+jj] + f1x * dem[ij+ii+jj]);
         return z;
     }
-
 
     template<typename TF>
     bool is_ghost_cell(
@@ -330,6 +334,481 @@ namespace
         }
     }
 
+
+    namespace most = Monin_obukhov;
+    namespace bsk = Boundary_surface_kernels;
+
+    /* Is this cell inside the terrain? Same test is_ghost_cell uses. */
+    template<typename TF>
+    bool is_solid(
+            const std::vector<TF>& dem,
+            const std::vector<TF>& x, const std::vector<TF>& y,
+            const std::vector<TF>& z, const TF dx, const TF dy,
+            const int i, const int j, const int k,
+            const int icells, const int jcells,
+            const int mpi_offset_x, const int mpi_offset_y)
+    {
+        const TF zdem = interp2_dem(x[i], y[j], x, y, dem, dx, dy,
+                                    icells, jcells, mpi_offset_x, mpi_offset_y);
+        return z[k] <= zdem;
+    }
+
+    template<typename TF>
+    void find_wall_cells(
+            Wall_cells<TF>& wall, const std::vector<TF>& dem,
+            const std::vector<TF>& x, const std::vector<TF>& y,
+            const std::vector<TF>& z, const std::vector<TF>& dz,
+            const TF dx, const TF dy, const TF z0m, const TF z0h,
+            const int istart, const int jstart, const int kstart,
+            const int iend,   const int jend,   const int kend,
+            const int icells, const int jcells,
+            const int mpi_offset_x, const int mpi_offset_y)
+    {
+        auto solid = [&](const int i, const int j, const int k)
+        {
+            return is_solid(dem, x, y, z, dx, dy, i, j, k,
+                            icells, jcells, mpi_offset_x, mpi_offset_y);
+        };
+
+        auto add = [&](const int i, const int j, const int k,
+                       const int axis, const int sgn, const TF da)
+        {
+            wall.i.push_back(i);
+            wall.j.push_back(j);
+            wall.k.push_back(k);
+            wall.axis.push_back(axis);
+            wall.sign.push_back(sgn);
+            wall.dn.push_back(TF(0.5) * da);
+            wall.da.push_back(da);
+            wall.z0m.push_back(z0m);
+            wall.z0h.push_back(z0h);
+        };
+
+        for (int k=kstart; k<kend; ++k)
+            for (int j=jstart; j<jend; ++j)
+                for (int i=istart; i<iend; ++i)
+                {
+                    if (solid(i, j, k))
+                        continue;               // this cell is rock
+
+                    if (k > kstart && solid(i, j, k-1))
+                        add(i, j, k, 2, -1, dz[k]);
+
+                    if (solid(i-1, j, k)) add(i, j, k, 0, -1, dx);
+                    if (solid(i+1, j, k)) add(i, j, k, 0, +1, dx);
+                    if (solid(i, j-1, k)) add(i, j, k, 1, -1, dy);
+                    if (solid(i, j+1, k)) add(i, j, k, 1, +1, dy);
+                }
+
+        wall.n = wall.i.size();
+        wall.obuk .resize(wall.n, TF(-1));   // slightly unstable first guess
+        wall.ustar.resize(wall.n, TF(0));
+        wall.utan .resize(wall.n, TF(0));
+    }
+
+    template<typename TF>
+    void wall_similarity_kernel(
+            std::vector<TF>& ustar, std::vector<TF>& obuk,
+            std::vector<TF>& utan,
+            const TF* const restrict u, const TF* const restrict v,
+            const TF* const restrict b, const TF* const restrict b_wall,
+            const std::vector<int>& wi, const std::vector<int>& wj,
+            const std::vector<int>& wk, const std::vector<int>& waxis,
+            const std::vector<TF>& wdn,
+            const std::vector<TF>& wz0m, const std::vector<TF>& wz0h,
+            const bool sw_stability, const bool sw_stab_vertical,
+            int& n_zl_clamped,
+            const int n, const int icells, const int ijcells)
+    {
+        const int ii = 1;
+        const int jj = icells;
+        const int kk = ijcells;
+
+        for (int m=0; m<n; ++m)
+        {
+            const int ijk = wi[m] + wj[m]*jj + wk[m]*kk;
+
+            // Horizontal speed at the CELL CENTRE, from its two faces.
+            const TF uc = TF(0.5) * (u[ijk] + u[ijk+ii]);
+            const TF vc = TF(0.5) * (v[ijk] + v[ijk+jj]);
+            const TF du = std::max(std::sqrt(uc*uc + vc*vc),
+                                   TF(Constants::dsmall));
+
+            const TF zsl = wdn[m];
+
+            TF L;
+            if (sw_stability && (waxis[m] == 2 || sw_stab_vertical))
+            {
+                const TF db = b[ijk] - b_wall[m];
+                L = bsk::calc_obuk_noslip_dirichlet_iterative(
+                        obuk[m], du, db, zsl, wz0m[m], wz0h[m]);
+            }
+            else
+                L = TF(Constants::dbig);      // neutral: psi -> 0
+
+            if (L < TF(0) && zsl/L < Constants::zL_min<TF>)
+            {
+                L = zsl / Constants::zL_min<TF>;
+                ++n_zl_clamped;
+            }
+
+            obuk[m]  = L;
+            ustar[m] = du * most::fm(zsl, wz0m[m], L);
+            utan[m]  = du;
+        }
+    }
+
+
+
+    template<typename TF>
+    void find_wall_cells_stag(
+            Wall_cells<TF>& wall, const std::vector<TF>& dem,
+            const std::vector<TF>& xg, const std::vector<TF>& yg,
+            const std::vector<TF>& zg,
+            const std::vector<TF>& x, const std::vector<TF>& y,
+            const std::vector<TF>& dz,
+            const TF dx, const TF dy, const TF z0m, const TF z0h,
+            const int istart, const int jstart, const int kstart,
+            const int iend,   const int jend,   const int kend,
+            const int icells, const int jcells,
+            const int mpi_offset_x, const int mpi_offset_y)
+    {
+        auto solid = [&](const int i, const int j, const int k)
+        {
+            const TF zdem = interp2_dem(xg[i], yg[j], x, y, dem, dx, dy,
+                                        icells, jcells,
+                                        mpi_offset_x, mpi_offset_y);
+            return zg[k] <= zdem;
+        };
+
+        auto add = [&](const int i, const int j, const int k,
+                       const int axis, const int sgn, const TF da)
+        {
+            wall.i.push_back(i);
+            wall.j.push_back(j);
+            wall.k.push_back(k);
+            wall.axis.push_back(axis);
+            wall.sign.push_back(sgn);
+            wall.dn.push_back(TF(0.5) * da);
+            wall.da.push_back(da);
+            wall.z0m.push_back(z0m);
+            wall.z0h.push_back(z0h);
+        };
+
+        for (int k=kstart; k<kend; ++k)
+            for (int j=jstart; j<jend; ++j)
+                for (int i=istart; i<iend; ++i)
+                {
+                    if (solid(i, j, k))
+                        continue;
+
+                    if (k > kstart && solid(i, j, k-1))
+                        add(i, j, k, 2, -1, dz[k]);
+
+                    if (solid(i-1, j, k)) add(i, j, k, 0, -1, dx);
+                    if (solid(i+1, j, k)) add(i, j, k, 0, +1, dx);
+                    if (solid(i, j-1, k)) add(i, j, k, 1, -1, dy);
+                    if (solid(i, j+1, k)) add(i, j, k, 1, +1, dy);
+                }
+
+        wall.n = wall.i.size();
+        wall.obuk .resize(wall.n, TF(-1));
+        wall.ustar.resize(wall.n, TF(0));
+        wall.utan .resize(wall.n, TF(0));
+    }
+
+    template<typename TF>
+    void wall_momentum_flux_kernel(
+            TF* const restrict at,
+            const TF* const restrict fld,        // the component being forced
+            const TF* const restrict oth,        // the other horizontal one
+            const TF* const restrict w,
+            const TF* const restrict evisc,
+            const std::vector<int>& wi, const std::vector<int>& wj,
+            const std::vector<int>& wk, const std::vector<int>& waxis,
+            const std::vector<int>& wsign, const std::vector<TF>& wda,
+            const std::vector<int>& wfloor,      // -> index into ustar
+            const std::vector<TF>& ustar,
+            const TF* const restrict dzi, const TF* const restrict dzhi,
+            const TF* const restrict rhoref, const TF* const restrict rhorefh,
+            const TF dxi, const TF dyi, const TF visc,
+            const int comp, const bool sw_vert,
+            TF& tau_max, TF& undo_max, int& n_bad,
+            const int n, const int icells, const int ijcells)
+    {
+        const int ii = 1;
+        const int jj = icells;
+        const int kk = ijcells;
+
+        // Along-component and cross-component strides and metrics. For u the
+        // component axis is x; for v it is y.
+        const int  cc  = (comp == 0) ? ii  : jj;    // stride along the component
+        const int  oo  = (comp == 0) ? jj  : ii;    // stride across it
+        const TF   ci  = (comp == 0) ? dxi : dyi;   // 1/d along the component
+        const TF   oi  = (comp == 0) ? dyi : dxi;   // 1/d across it
+
+        for (int m=0; m<n; ++m)
+        {
+            const int i = wi[m];
+            const int j = wj[m];
+            const int k = wk[m];
+            const int ijk = i + j*jj + k*kk;
+
+            // --- 1. undo the operator's stress across this face -------------
+            TF undo;
+            if (waxis[m] == comp)
+            {
+                undo = TF(0);
+            }
+            else if (waxis[m] == 2)
+            {
+                // The floor/ceiling face: eviscb * (dc/dz + dw/dc).
+                if (wsign[m] < 0)
+                {
+                    const TF Kf = TF(0.25)*(evisc[ijk-cc-kk] + evisc[ijk-kk]
+                                          + evisc[ijk-cc   ] + evisc[ijk   ]) + visc;
+                    undo = -rhorefh[k] * Kf*((fld[ijk] - fld[ijk-kk])*dzhi[k]
+                                           + (w[ijk] - w[ijk-cc])*ci)
+                           / rhoref[k] * dzi[k];
+                }
+                else
+                {
+                    const TF Kf = TF(0.25)*(evisc[ijk-cc   ] + evisc[ijk   ]
+                                          + evisc[ijk-cc+kk] + evisc[ijk+kk]) + visc;
+                    undo = +rhorefh[k+1] * Kf*((fld[ijk+kk] - fld[ijk])*dzhi[k+1]
+                                             + (w[ijk+kk] - w[ijk-cc+kk])*ci)
+                           / rhoref[k] * dzi[k];
+                }
+            }
+            else
+            {
+                // A face normal to the OTHER horizontal axis:
+                // eviscn/s * (dc/do + do/dc).
+                if (wsign[m] < 0)
+                {
+                    const TF Kf = TF(0.25)*(evisc[ijk-cc-oo] + evisc[ijk-oo]
+                                          + evisc[ijk-cc   ] + evisc[ijk   ]) + visc;
+                    undo = -Kf*((fld[ijk] - fld[ijk-oo])*oi
+                              + (oth[ijk] - oth[ijk-cc])*ci) * oi;
+                }
+                else
+                {
+                    const TF Kf = TF(0.25)*(evisc[ijk-cc   ] + evisc[ijk   ]
+                                          + evisc[ijk-cc+oo] + evisc[ijk+oo]) + visc;
+                    undo = +Kf*((fld[ijk+oo] - fld[ijk])*oi
+                              + (oth[ijk+oo] - oth[ijk-cc+oo])*ci) * oi;
+                }
+            }
+
+            if (waxis[m] == comp || (waxis[m] != 2 && !sw_vert))
+            {
+                at[ijk] -= undo;
+                continue;
+            }
+
+            const int mf = wfloor[m];
+            if (mf < 0)
+            {
+                // No floor face in this column: nothing to take u* from. Leave
+                // the operator's stress in place rather than invent one.
+                continue;
+            }
+
+            // The horizontal wind AT THIS POINT. fld is already there; the
+            // other component needs the four-point staggered average.
+            const TF fc = fld[ijk];
+            const TF oc = TF(0.25)*(oth[ijk] + oth[ijk-cc]
+                                  + oth[ijk+oo] + oth[ijk-cc+oo]);
+            const TF uh = std::sqrt(fc*fc + oc*oc);
+
+            TF tau = TF(0);
+            if (uh > TF(Constants::dsmall))
+                tau = -ustar[mf] * ustar[mf] * (fc / uh);   // opposes the wind
+
+            if (!std::isfinite(tau) || !std::isfinite(undo))
+            {
+                ++n_bad;
+                continue;
+            }
+
+            tau_max  = std::max(tau_max,  std::abs(tau));
+            undo_max = std::max(undo_max, std::abs(undo));
+
+            at[ijk] -= undo;
+            at[ijk] += tau / wda[m];
+        }
+    }
+    template<typename TF>
+    void wall_scalar_flux_kernel(
+            TF* const restrict at,
+            std::vector<TF>& flux_out,
+            const TF* const restrict a,
+            const TF* const restrict evisc,
+            const std::vector<TF>& phi_wall,
+            const std::vector<int>& wi, const std::vector<int>& wj,
+            const std::vector<int>& wk, const std::vector<int>& waxis,
+            const std::vector<int>& wsign,
+            const std::vector<TF>& wdn, const std::vector<TF>& wda,
+            const std::vector<TF>& wz0h,
+            const std::vector<TF>& ustar, const std::vector<TF>& obuk,
+            const TF* const restrict dzi, const TF* const restrict dzhi,
+            const TF* const restrict rhoref, const TF* const restrict rhorefh,
+            const TF dxidxi, const TF dyidyi,
+            const TF tPr_i, const TF visc,
+            TF& ch_min, TF& ch_max, TF& src_max, TF& undo_max, int& n_bad,
+            const bool sw_vert,
+            const int n, const int icells, const int ijcells)
+    {
+        const int ii = 1;
+        const int jj = icells;
+        const int kk = ijcells;
+
+        for (int m=0; m<n; ++m)
+        {
+            const int i = wi[m];
+            const int j = wj[m];
+            const int k = wk[m];
+            const int ijk = i + j*jj + k*kk;
+
+            // --- 1. undo the operator's flux across this face ---------------
+            TF undo;
+            if (waxis[m] == 0)
+            {
+                if (wsign[m] < 0)
+                {
+                    const TF Kf = TF(0.5)*(evisc[ijk-ii] + evisc[ijk])*tPr_i + visc;
+                    undo = -Kf*(a[ijk] - a[ijk-ii]) * dxidxi;
+                }
+                else
+                {
+                    const TF Kf = TF(0.5)*(evisc[ijk] + evisc[ijk+ii])*tPr_i + visc;
+                    undo = +Kf*(a[ijk+ii] - a[ijk]) * dxidxi;
+                }
+            }
+            else if (waxis[m] == 1)
+            {
+                if (wsign[m] < 0)
+                {
+                    const TF Kf = TF(0.5)*(evisc[ijk-jj] + evisc[ijk])*tPr_i + visc;
+                    undo = -Kf*(a[ijk] - a[ijk-jj]) * dyidyi;
+                }
+                else
+                {
+                    const TF Kf = TF(0.5)*(evisc[ijk] + evisc[ijk+jj])*tPr_i + visc;
+                    undo = +Kf*(a[ijk+jj] - a[ijk]) * dyidyi;
+                }
+            }
+            else
+            {
+                if (wsign[m] < 0)
+                {
+                    const TF Kf = TF(0.5)*(evisc[ijk-kk] + evisc[ijk])*tPr_i + visc;
+                    undo = -rhorefh[k] * Kf*(a[ijk] - a[ijk-kk])*dzhi[k]
+                           / rhoref[k] * dzi[k];
+                }
+                else
+                {
+                    const TF Kf = TF(0.5)*(evisc[ijk] + evisc[ijk+kk])*tPr_i + visc;
+                    undo = +rhorefh[k+1] * Kf*(a[ijk+kk] - a[ijk])*dzhi[k+1]
+                           / rhoref[k] * dzi[k];
+                }
+            }
+            if (waxis[m] != 2 && !sw_vert)
+            {
+                flux_out[m] = TF(0);
+                at[ijk] -= undo;
+                continue;
+            }
+
+            const TF fh = most::fh(wdn[m], wz0h[m], obuk[m]);
+            const TF ch = ustar[m] * fh;
+            const TF F  = ch * (phi_wall[m] - a[ijk]);
+
+            if (!std::isfinite(F) || !std::isfinite(undo))
+            {
+                ++n_bad;
+                flux_out[m] = TF(0);
+                continue;
+            }
+
+            ch_min   = std::min(ch_min, ch);
+            ch_max   = std::max(ch_max, ch);
+            src_max  = std::max(src_max,  std::abs(F / wda[m]));
+            undo_max = std::max(undo_max, std::abs(undo));
+
+            at[ijk] -= undo;
+            flux_out[m] = F;
+            at[ijk] += F / wda[m];
+        }
+    }
+
+    template<typename TF>
+    void wall_impermeable_kernel(
+            TF* const restrict u, TF* const restrict v, TF* const restrict w,
+            const std::vector<int>& wi, const std::vector<int>& wj,
+            const std::vector<int>& wk, const std::vector<int>& waxis,
+            const std::vector<int>& wsign,
+            const int n, const int icells, const int ijcells)
+    {
+        const int ii = 1;
+        const int jj = icells;
+        const int kk = ijcells;
+
+        for (int m=0; m<n; ++m)
+        {
+            const int ijk = wi[m] + wj[m]*jj + wk[m]*kk;
+
+            if (waxis[m] == 0)
+                u[wsign[m] < 0 ? ijk : ijk+ii] = TF(0);
+            else if (waxis[m] == 1)
+                v[wsign[m] < 0 ? ijk : ijk+jj] = TF(0);
+            else
+                w[wsign[m] < 0 ? ijk : ijk+kk] = TF(0);
+        }
+    }
+    template<typename TF>
+    void wall_coeff_kernel(
+            std::vector<TF>& a_wall,
+            const std::vector<int>& widx, const std::vector<TF>& nsq,
+            const std::vector<TF>& di,
+            const std::vector<int>& wi, const std::vector<int>& wj,
+            const std::vector<int>& wk,
+            const std::vector<TF>& ustar, const std::vector<TF>& utan,
+            const std::vector<TF>& obuk, const std::vector<TF>& wdn,
+            const std::vector<TF>& wz0h,
+            const TF* const restrict evisc,
+            const TF visc, const TF tPr_i, const bool is_scalar,
+            const int nghost, const int icells, const int ijcells)
+    {
+        for (int n=0; n<nghost; ++n)
+        {
+            const int m = widx[n];
+            if (m < 0)
+            {
+                a_wall[n] = TF(2);            // upstream Dirichlet mirror
+                continue;
+            }
+
+            const int ijk = wi[m] + wj[m]*icells + wk[m]*ijcells;
+
+            TF a;
+            if (is_scalar)
+            {
+                const TF K = evisc[ijk] * tPr_i + visc;
+                a = di[n] * ustar[m]
+                    * most::fh(wdn[m], wz0h[m], obuk[m]) / K;
+            }
+            else
+            {
+                const TF K = evisc[ijk] + visc;
+                const TF at = di[n] * ustar[m] * ustar[m]
+                            / (K * std::max(utan[m], TF(Constants::dsmall)));
+                a = TF(2)*nsq[n] + (TF(1) - nsq[n]) * std::min(at, TF(2));
+            }
+
+            a_wall[n] = std::min(std::max(a, TF(0)), TF(2));
+        }
+    }
     template<typename TF>
     void calc_ghost_cells(
             Ghost_cells<TF>& ghost, const std::vector<TF>& dem, 
@@ -445,7 +924,8 @@ namespace
             const int* const restrict gi, const int* const restrict gj, const int* const restrict gk,
             const int* const restrict ipi, const int* const restrict ipj, const int* const restrict ipk,
             Boundary_type bc, const TF visc, const int n_ghostcells, const int n_idw,
-            const int icells, const int ijcells)
+            const int icells, const int ijcells,
+            const TF* const restrict a_wall = nullptr)
     {
         const int n_idw_loc = (bc == Boundary_type::Dirichlet_type) ? n_idw-1 : n_idw;
 
@@ -472,8 +952,12 @@ namespace
             vI /= c_idw_sum[n];
 
             // Set the ghost cells, depending on the IB boundary conditions
-            if (bc == Boundary_type::Dirichlet_type)
-                fld[ijkg] = 2*boundary_value[n] - vI;       // Image value reflected across IB
+            if (a_wall != nullptr)
+            {
+                fld[ijkg] = vI + a_wall[n] * (boundary_value[n] - vI);
+            }
+            else if (bc == Boundary_type::Dirichlet_type)
+                fld[ijkg] = 2*boundary_value[n] - vI;
             else if (bc == Boundary_type::Neumann_type)
                 fld[ijkg] = vI - boundary_value[n] * di[n]; // Image value minus gradient times distance
             else if (bc == Boundary_type::Flux_type)
@@ -483,7 +967,6 @@ namespace
             }
         }
     }
-
 
     template<typename TF>
     void calc_mask(
@@ -511,7 +994,6 @@ namespace
                 }
     }
 
-
     template<typename TF>
     void find_k_dem(
             unsigned int* const restrict k_dem,
@@ -536,12 +1018,13 @@ namespace
             }
     }
 
-
     template<typename TF>
     void calc_fluxes(
             TF* const restrict flux,
             const unsigned int* const restrict k_dem,
             const TF* restrict s,
+            const TF* const restrict evisc,
+            const TF tPr_i,
             const TF dx, const TF dy, const TF* const restrict dz,
             const TF dxi, const TF dyi, const TF* const restrict dzhi,
             const TF svisc,
@@ -559,36 +1042,41 @@ namespace
                 // Fluxes are only exchanged with neighbors that are a ghost cell. This requires
                 // a drawing...
 
+                auto Kf = [&](const int a, const int b)
+                {
+                    return TF(0.5)*(evisc[a] + evisc[b])*tPr_i + svisc;
+                };
+
                 // Add the vertical flux.
                 const int ij  = i + j*jj;
                 {
                     const int ijk = i + j*jj + k_dem[ij]*kk;
-                    flux[ij] = -svisc*(s[ijk]-s[ijk-kk])*dzhi[k_dem[ij]] * dx*dy;
+                    flux[ij] = -Kf(ijk, ijk-kk)*(s[ijk]-s[ijk-kk])*dzhi[k_dem[ij]] * dx*dy;
                 }
 
                 // West flux.
                 for (int k=k_dem[ij]; k<k_dem[ij-ii]; ++k)
                 {
                     const int ijk = i + j*jj + k*kk;
-                    flux[ij] += -svisc*(s[ijk]-s[ijk-ii])*dxi * dy*dz[k];
+                    flux[ij] += -Kf(ijk, ijk-ii)*(s[ijk]-s[ijk-ii])*dxi * dy*dz[k];
                 }
                 // East flux.
                 for (int k=k_dem[ij]; k<k_dem[ij+ii]; ++k)
                 {
                     const int ijk = i + j*jj + k*kk;
-                    flux[ij] += svisc*(s[ijk+ii]-s[ijk])*dxi * dy*dz[k];
+                    flux[ij] += Kf(ijk, ijk+ii)*(s[ijk+ii]-s[ijk])*dxi * dy*dz[k];
                 }
                 // South flux.
                 for (int k=k_dem[ij]; k<k_dem[ij-jj]; ++k)
                 {
                     const int ijk = i + j*jj + k*kk;
-                    flux[ij] += -svisc*(s[ijk]-s[ijk-jj])*dyi * dx*dz[k];
+                    flux[ij] += -Kf(ijk, ijk-jj)*(s[ijk]-s[ijk-jj])*dyi * dx*dz[k];
                 }
                 // North flux.
                 for (int k=k_dem[ij]; k<k_dem[ij+jj]; ++k)
                 {
                     const int ijk = i + j*jj + k*kk;
-                    flux[ij] += svisc*(s[ijk+jj]-s[ijk])*dyi * dx*dz[k];
+                    flux[ij] += Kf(ijk, ijk+jj)*(s[ijk+jj]-s[ijk])*dyi * dx*dz[k];
                 }
 
                 // Normalize the fluxes back to the correct units.
@@ -625,6 +1113,104 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         // Read additional settings
         n_idw_points = inputin.get_item<int>("IB", "n_idw_points", "");
 
+        sw_dem_halo_replicate = inputin.get_item<bool>(
+                "IB", "sw_dem_halo_replicate", "", false);
+
+        // Monin-Obukhov wall model. See IB_WALL_MODEL.md.
+        const std::string wm = inputin.get_item<std::string>(
+                "IB", "sw_wall_model", "", "0");
+        if (wm == "0" || wm == "false")
+            sw_wall_model = IB_wall_type::Disabled;
+        else if (wm == "neutral")
+            sw_wall_model = IB_wall_type::Neutral;
+        else if (wm == "most")
+            sw_wall_model = IB_wall_type::Most;
+        else
+            throw std::runtime_error(
+                    "\"" + wm + "\" is not a valid \"sw_wall_model\"; use "
+                    "0, neutral or most");
+
+        if (sw_wall_model != IB_wall_type::Disabled)
+        {
+            z0m_ib = inputin.get_item<TF>("IB", "z0m", "");
+            z0h_ib = inputin.get_item<TF>("IB", "z0h", "");
+        }
+        else
+        {
+            z0m_ib = TF(0);
+            z0h_ib = TF(0);
+        }
+
+        // The scalar diffusivity diff_smag2 applies is evisc/tPr + svisc, so
+        // the wall model has to read the same tPr rather than assume one.
+        tPr_wm = inputin.get_item<TF>("diff", "tPr", "", TF(1./3.));
+        sw_scalar_flux = inputin.get_item<bool>(
+                "IB", "sw_scalar_flux", "", sw_wall_model != IB_wall_type::Disabled);
+        sw_momentum_flux = inputin.get_item<bool>(
+                "IB", "sw_momentum_flux", "",
+                sw_wall_model != IB_wall_type::Disabled);
+        sw_momentum_flux_vertical = inputin.get_item<bool>(
+                "IB", "sw_momentum_flux_vertical", "", true);
+        diag_z_mom    = inputin.get_item<TF>("IB", "diag_z_mom", "", TF(10));
+        diag_z_scalar = inputin.get_item<TF>("IB", "diag_z_scalar", "", TF(2));
+        sw_strain_most = inputin.get_item<bool>(
+                "IB", "sw_strain_most", "",
+                sw_wall_model != IB_wall_type::Disabled);
+        sw_strain_most_vertical = inputin.get_item<bool>(
+                "IB", "sw_strain_most_vertical", "", false);
+        strain_most_min = inputin.get_item<TF>(
+                "IB", "strain_most_min", "", TF(0.05));
+        strain_most_reported = false;
+        strain_most_built = false;
+
+        if (sw_strain_most)
+        {
+            const std::string swdiff_sm = inputin.get_item<std::string>(
+                    "diff", "swdiff", "", "0");
+            if (swdiff_sm != "smag2")
+                throw std::runtime_error(
+                        "[IB] sw_strain_most rescales smag2's own evisc field. "
+                        "With [diff] swdiff != smag2 there is nothing for it "
+                        "to rescale and it would do nothing silently.");
+            const bool aniso = inputin.get_item<bool>(
+                    "diff", "swanisotropic", "", false);
+            if (aniso)
+                throw std::runtime_error(
+                        "[IB] sw_strain_most does not handle the anisotropic "
+                        "evisc_h / evisc_v split. Set [diff] "
+                        "swanisotropic=false or sw_strain_most=false.");
+        }
+        mom_flux_reported = false;
+        wall_flux_reported = false;
+        n_zl_clamped_last  = 0;
+
+        sw_scalar_flux_vertical = inputin.get_item<bool>(
+                "IB", "sw_scalar_flux_vertical", "", true);
+
+        sw_wall_stability_vertical = inputin.get_item<bool>(
+                "IB", "sw_wall_stability_vertical", "", false);
+
+        sw_impermeable = inputin.get_item<bool>(
+                "IB", "sw_impermeable", "", false);
+
+        if (sw_scalar_flux)
+        {
+            const std::string swdiff = inputin.get_item<std::string>(
+                    "diff", "swdiff", "", "0");
+            const std::string sworder = inputin.get_item<std::string>(
+                    "grid", "swspatialorder", "", "2");
+            if (swdiff != "smag2")
+                throw std::runtime_error(
+                        "[IB] sw_scalar_flux reproduces diff_c's own flux "
+                        "expression in order to subtract it, and that "
+                        "expression is smag2's. With [diff] swdiff != smag2 it "
+                        "would subtract the wrong thing silently.");
+            if (sworder != "2")
+                throw std::runtime_error(
+                        "[IB] sw_scalar_flux assumes the 2nd-order diffusion "
+                        "kernels ([grid] swspatialorder=2).");
+        }
+
         // Set available masks
         available_masks.insert(available_masks.end(), {"ib"});
     }
@@ -635,6 +1221,443 @@ Immersed_boundary<TF>::~Immersed_boundary()
 {
 }
 
+
+#ifndef USECUDA
+template<typename TF>
+void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats)
+{
+    if (sw_ib == IB_type::Disabled || sw_wall_model == IB_wall_type::Disabled)
+        return;
+    if (wall.n == 0)
+        return;
+
+    auto& gd = grid.get_grid_data();
+
+    const bool sw_stability = (sw_wall_model == IB_wall_type::Most);
+
+    std::vector<TF> b_wall(wall.n, TF(0));
+    std::shared_ptr<Field3d<TF>> buoy;
+
+    if (sw_stability)
+    {
+        buoy = fields.get_tmp();
+        thermo.get_thermo_field(*buoy, "b", false, false);
+
+        const std::vector<TF>& thvref = thermo.get_basestate_vector("thv");
+
+        const bool has_qt  = (fields.sp.find("qt")  != fields.sp.end());
+        const bool has_thl = (fields.sp.find("thl") != fields.sp.end());
+
+        auto wall_value = [&](const std::string& name, const int m) -> TF
+        {
+            auto it2 = sbot_2d.find(name);
+            if (it2 != sbot_2d.end())
+                return it2->second[wall.i[m] + wall.j[m]*gd.icells];
+            return sbc.count(name) ? sbc.at(name) : TF(0);
+        };
+
+        for (int m=0; m<wall.n; ++m)
+        {
+            const int k = wall.k[m];
+            const TF thl_w = has_thl ? wall_value("thl", m) : TF(0);
+            const TF qt_w  = has_qt  ? wall_value("qt",  m) : TF(0);
+            const TF thv_w = thl_w * (TF(1) + TF(0.61) * qt_w);
+            b_wall[m] = Constants::grav<TF> * (thv_w - thvref[k]) / thvref[k];
+        }
+    }
+
+    // nullptr is safe: the kernel only dereferences b when sw_stability.
+    const TF* b_ptr = sw_stability ? buoy->fld.data() : nullptr;
+
+    int n_zl_clamped = 0;
+
+    wall_similarity_kernel<TF>(
+            wall.ustar, wall.obuk, wall.utan,
+            fields.mp.at("u")->fld.data(),
+            fields.mp.at("v")->fld.data(),
+            b_ptr, b_wall.data(),
+            wall.i, wall.j, wall.k, wall.axis,
+            wall.dn, wall.z0m, wall.z0h,
+            sw_stability, sw_wall_stability_vertical,
+            n_zl_clamped,
+            wall.n, gd.icells, gd.ijcells);
+    n_zl_clamped_last = n_zl_clamped;
+
+    if (sw_stability)
+        fields.release_tmp(buoy);
+
+    std::shared_ptr<Field3d<TF>> evisc_tmp;
+    const TF* evisc_ptr;
+    if (fields.sd.count("evisc"))
+        evisc_ptr = fields.sd.at("evisc")->fld.data();
+    else
+    {
+        evisc_tmp = fields.get_tmp();
+        std::fill(evisc_tmp->fld.begin(), evisc_tmp->fld.end(), TF(0));
+        evisc_ptr = evisc_tmp->fld.data();
+    }
+
+    auto fill = [&](const std::string& name, const TF visc, const bool scalar)
+    {
+        Ghost_cells<TF>& gh = ghost.at(name);
+        wall_coeff_kernel<TF>(
+                gh.a_wall, gh.wall_idx, gh.nsq, gh.di,
+                wall.i, wall.j, wall.k,
+                wall.ustar, wall.utan, wall.obuk, wall.dn, wall.z0h,
+                evisc_ptr, visc, TF(1) / tPr_wm, scalar,
+                gh.nghost, gd.icells, gd.ijcells);
+    };
+
+    fill("u", fields.visc, false);
+    fill("v", fields.visc, false);
+    fill("w", fields.visc, false);
+    if (fields.sp.size() > 0)
+    {
+        if (sw_scalar_flux)
+        {
+            std::fill(ghost.at("s").a_wall.begin(),
+                      ghost.at("s").a_wall.end(), TF(0));
+        }
+        else
+            fill("s", fields.sp.begin()->second->visc, true);
+    }
+
+    if (evisc_tmp)
+        fields.release_tmp(evisc_tmp);
+}
+#endif
+
+#ifndef USECUDA
+template<typename TF>
+void Immersed_boundary<TF>::sbot_2d_to_ghosts()
+{
+    if (fields.sp.size() == 0)
+        return;
+
+    auto& gd = grid.get_grid_data();
+    const auto& mpi = master.get_MPI_data();
+    const int mpi_offset_x = -mpi.mpicoordx * gd.imax + gd.igc;
+    const int mpi_offset_y = -mpi.mpicoordy * gd.jmax + gd.jgc;
+
+    Ghost_cells<TF>& gh = ghost.at("s");
+
+    for (auto& it : sbot_2d)
+    {
+        auto its = gh.sbot.find(it.first);
+        if (its == gh.sbot.end())
+            continue;
+
+        for (int i=0; i<gh.nghost; ++i)
+            its->second[i] = interp2_dem(
+                    gh.xb[i], gh.yb[i], gd.x, gd.y, it.second,
+                    gd.dx, gd.dy, gd.icells, gd.jcells,
+                    mpi_offset_x, mpi_offset_y);
+    }
+}
+
+template<typename TF>
+void Immersed_boundary<TF>::update_time_dependent(Timeloop<TF>& timeloop)
+{
+    if (sw_ib == IB_type::Disabled || !sw_timedep_sbot || sbot_2d.empty())
+        return;
+
+    auto& gd = grid.get_grid_data();
+    const unsigned long itime = timeloop.get_itime();
+    const unsigned long iiotimeprec = timeloop.get_iiotimeprec();
+
+    auto tmp = fields.get_tmp();
+    int nerror = 0;
+
+    auto load_2d = [&](std::vector<TF>& fld, const std::string& name,
+                       const unsigned long it_load)
+    {
+        char filename[256];
+        const std::string base = name + "_sbot";
+        std::snprintf(filename, 256, "%s.%07d", base.c_str(),
+                      int(it_load / iiotimeprec));
+        master.print_message("Loading \"%s\" ... ", filename);
+
+        if (field3d_io.load_xy_slice(fld.data(), tmp->fld.data(), filename))
+        {
+            master.print_message("FAILED\n");
+            nerror += 1;
+        }
+        else
+            master.print_message("OK\n");
+
+        boundary_cyclic.exec_2d(fld.data());
+    };
+
+    if (!sbot_timedep_init)
+    {
+        // Snap to the input grid the way boundary.cxx does, so a restart at a
+        // time that is not a multiple of sbot_loadtime still brackets it.
+        itime_sbot_prev = itime / iloadtime_sbot * iloadtime_sbot;
+        itime_sbot_next = itime_sbot_prev + iloadtime_sbot;
+
+        for (auto& it : sbot_2d)
+        {
+            sbot_2d_prev.emplace(it.first, std::vector<TF>(gd.ijcells, TF(0)));
+            sbot_2d_next.emplace(it.first, std::vector<TF>(gd.ijcells, TF(0)));
+            load_2d(sbot_2d_prev.at(it.first), it.first, itime_sbot_prev);
+            load_2d(sbot_2d_next.at(it.first), it.first, itime_sbot_next);
+        }
+
+        sbot_timedep_init = true;
+
+        master.print_message(
+                "IB: 2-D surface condition follows time, "
+                "<scalar>_sbot.<iotime> every %d s\n",
+                int(iloadtime_sbot / iiotimeprec));
+    }
+    else if (itime > itime_sbot_next)
+    {
+        itime_sbot_prev = itime_sbot_next;
+        itime_sbot_next = itime_sbot_prev + iloadtime_sbot;
+
+        for (auto& it : sbot_2d)
+        {
+            sbot_2d_prev.at(it.first) = sbot_2d_next.at(it.first);
+            load_2d(sbot_2d_next.at(it.first), it.first, itime_sbot_next);
+        }
+    }
+
+    fields.release_tmp(tmp);
+    master.sum(&nerror, 1);
+    if (nerror)
+        throw std::runtime_error(
+                "[IB] sw_timedep_sbot: could not read a <scalar>_sbot field. "
+                "There is no extrapolation - write fields covering the whole "
+                "run, at every multiple of sbot_loadtime.");
+
+    // Linear in time, as boundary.cxx does for the flat bottom.
+    const TF f1 = TF(itime - itime_sbot_prev)
+                / TF(itime_sbot_next - itime_sbot_prev);
+    const TF f0 = TF(1) - f1;
+
+    for (auto& it : sbot_2d)
+    {
+        std::vector<TF>& sb = it.second;
+        const std::vector<TF>& p = sbot_2d_prev.at(it.first);
+        const std::vector<TF>& q = sbot_2d_next.at(it.first);
+
+        for (int n=0; n<gd.ijcells; ++n)
+            sb[n] = f0 * p[n] + f1 * q[n];
+    }
+
+    sbot_2d_to_ghosts();
+}
+#endif
+
+#ifndef USECUDA
+template<typename TF>
+void Immersed_boundary<TF>::exec_scalar_flux(Thermo<TF>& thermo, Stats<TF>& stats)
+{
+    if (sw_ib == IB_type::Disabled || !sw_scalar_flux)
+        return;
+    if (sw_wall_model == IB_wall_type::Disabled || wall.n == 0)
+        return;
+    if (fields.sp.size() == 0)
+        return;
+
+    auto& gd = grid.get_grid_data();
+
+    // The SGS diffusivity the operator used. Without smag2 there is no evisc
+    // and the molecular value is what diff_c applied.
+    std::shared_ptr<Field3d<TF>> evisc_tmp;
+    const TF* evisc_ptr;
+    if (fields.sd.count("evisc"))
+        evisc_ptr = fields.sd.at("evisc")->fld.data();
+    else
+    {
+        evisc_tmp = fields.get_tmp();
+        std::fill(evisc_tmp->fld.begin(), evisc_tmp->fld.end(), TF(0));
+        evisc_ptr = evisc_tmp->fld.data();
+    }
+
+    const TF dxidxi = TF(1) / (gd.dx * gd.dx);
+    const TF dyidyi = TF(1) / (gd.dy * gd.dy);
+
+    TF ch_min = TF(1e30), ch_max = TF(-1e30);
+    TF src_max = TF(0), undo_max = TF(0);
+    int n_bad = 0;
+
+    for (auto& it : fields.sp)
+    {
+        const std::string& name = it.first;
+
+        std::vector<TF>& pw = wall_value_face.at(name);
+        auto it2d = sbot_2d.find(name);
+        for (int m=0; m<wall.n; ++m)
+            pw[m] = (it2d != sbot_2d.end())
+                  ? it2d->second[wall.i[m] + wall.j[m]*gd.icells]
+                  : sbc.at(name);
+
+        wall_scalar_flux_kernel<TF>(
+                fields.st.at(name)->fld.data(),
+                wall_flux.at(name),
+                it.second->fld.data(),
+                evisc_ptr,
+                pw,
+                wall.i, wall.j, wall.k, wall.axis, wall.sign,
+                wall.dn, wall.da, wall.z0h,
+                wall.ustar, wall.obuk,
+                gd.dzi.data(), gd.dzhi.data(),
+                fields.rhoref.data(), fields.rhorefh.data(),
+                dxidxi, dyidyi,
+                TF(1) / tPr_wm, it.second->visc,
+                ch_min, ch_max, src_max, undo_max, n_bad,
+                sw_scalar_flux_vertical,
+                wall.n, gd.icells, gd.ijcells);
+    }
+
+
+    if (hfss_ij.size() == size_t(gd.ijcells))
+    {
+        const std::vector<TF>& exn = thermo.get_basestate_vector("exner");
+        std::fill(hfss_ij.begin(), hfss_ij.end(), TF(0));
+        std::fill(hfls_ij.begin(), hfls_ij.end(), TF(0));
+
+        for (int m=0; m<wall.n; ++m)
+        {
+            const int ij = wall.i[m] + wall.j[m]*gd.icells;
+            const int k  = wall.k[m];
+            const TF w_area = (wall.axis[m] == 2) ? TF(1)
+                            : (wall.axis[m] == 0) ? gd.dz[k]*gd.dxi
+                                                  : gd.dz[k]*gd.dyi;
+            const TF rho = fields.rhoref[k];
+            if (wall_flux.count("thl"))
+                hfss_ij[ij] += rho * Constants::cp<TF> * exn[k]
+                             * wall_flux.at("thl")[m] * w_area;
+            if (wall_flux.count("qt"))
+                hfls_ij[ij] += rho * Constants::Lv<TF>
+                             * wall_flux.at("qt")[m] * w_area;
+        }
+    }
+    if (evisc_tmp)
+        fields.release_tmp(evisc_tmp);
+
+    master.sum(&n_bad, 1);
+
+    if (!wall_flux_reported)
+    {
+        wall_flux_reported = true;
+        master.print_message(
+                "IB: surface exchange velocity u* f_h = %.4g .. %.4g m/s "
+                "(MOST expects ~0.01; the ghost cell it replaces implied ~6)\n",
+                double(ch_min), double(ch_max));
+        master.print_message(
+                "IB: max |source| %.3g K/s, max |diffusive term removed| "
+                "%.3g K/s, %d face(s) with z/L clamped, %d non-finite\n",
+                double(src_max), double(undo_max), n_zl_clamped_last, n_bad);
+    }
+
+    if (n_bad > 0)
+        throw std::runtime_error(
+                "[IB] sw_scalar_flux produced a non-finite surface flux. That "
+                "is u* f_h (phi_wall - phi_cell) or the diffusive term being "
+                "subtracted, so look at ustar_ib and obuk_ib first: L -> 0- "
+                "over near-zero wind sends f_h to infinity. Faces affected is "
+                "reported above.");
+}
+
+template<typename TF>
+void Immersed_boundary<TF>::exec_impermeable()
+{
+    if (sw_ib == IB_type::Disabled || !sw_impermeable || wall.n == 0)
+        return;
+
+    auto& gd = grid.get_grid_data();
+
+    wall_impermeable_kernel<TF>(
+            fields.mp.at("u")->fld.data(),
+            fields.mp.at("v")->fld.data(),
+            fields.mp.at("w")->fld.data(),
+            wall.i, wall.j, wall.k, wall.axis, wall.sign,
+            wall.n, gd.icells, gd.ijcells);
+}
+#endif
+
+#ifndef USECUDA
+template<typename TF>
+void Immersed_boundary<TF>::exec_momentum_flux(Stats<TF>& stats)
+{
+    if (sw_ib == IB_type::Disabled || !sw_momentum_flux)
+        return;
+    if (sw_wall_model == IB_wall_type::Disabled || wall.n == 0)
+        return;
+
+    auto& gd = grid.get_grid_data();
+
+    std::shared_ptr<Field3d<TF>> evisc_tmp;
+    const TF* evisc_ptr;
+    if (fields.sd.count("evisc"))
+        evisc_ptr = fields.sd.at("evisc")->fld.data();
+    else
+    {
+        evisc_tmp = fields.get_tmp();
+        std::fill(evisc_tmp->fld.begin(), evisc_tmp->fld.end(), TF(0));
+        evisc_ptr = evisc_tmp->fld.data();
+    }
+
+    TF tau_max = TF(0), undo_max = TF(0);
+    int n_bad = 0;
+
+    const TF* const u = fields.mp.at("u")->fld.data();
+    const TF* const v = fields.mp.at("v")->fld.data();
+    const TF* const w = fields.mp.at("w")->fld.data();
+
+    wall_momentum_flux_kernel<TF>(
+            fields.mt.at("u")->fld.data(), u, v, w, evisc_ptr,
+            wall_u.i, wall_u.j, wall_u.k, wall_u.axis, wall_u.sign, wall_u.da,
+            wall_u_floor, wall.ustar,
+            gd.dzi.data(), gd.dzhi.data(),
+            fields.rhoref.data(), fields.rhorefh.data(),
+            gd.dxi, gd.dyi, fields.visc,
+            0, sw_momentum_flux_vertical,
+            tau_max, undo_max, n_bad,
+            wall_u.n, gd.icells, gd.ijcells);
+
+    wall_momentum_flux_kernel<TF>(
+            fields.mt.at("v")->fld.data(), v, u, w, evisc_ptr,
+            wall_v.i, wall_v.j, wall_v.k, wall_v.axis, wall_v.sign, wall_v.da,
+            wall_v_floor, wall.ustar,
+            gd.dzi.data(), gd.dzhi.data(),
+            fields.rhoref.data(), fields.rhorefh.data(),
+            gd.dxi, gd.dyi, fields.visc,
+            1, sw_momentum_flux_vertical,
+            tau_max, undo_max, n_bad,
+            wall_v.n, gd.icells, gd.ijcells);
+
+    if (evisc_tmp)
+        fields.release_tmp(evisc_tmp);
+
+    master.sum(&n_bad, 1);
+
+    if (!mom_flux_reported)
+    {
+        mom_flux_reported = true;
+        master.print_message(
+                "IB: momentum through MOST on %d u-faces and %d v-faces; "
+                "max |u*^2| %.4g m2/s2, max |diffusive stress removed| "
+                "%.4g m2/s2, %d non-finite\n",
+                wall_u.n, wall_v.n, double(tau_max), double(undo_max), n_bad);
+        if (undo_max > TF(20) * tau_max)
+            master.print_message(
+                    "IB: *** the stress being REMOVED is %.0fx the stress "
+                    "being applied. That is the over-coupling this patch "
+                    "exists to fix, so a large ratio here is expected at t=0 - "
+                    "but if it stays large the subtraction is not matching "
+                    "diff_u/diff_v and the run will not survive it.\n",
+                    double(undo_max / std::max(tau_max, TF(1e-12))));
+    }
+
+    if (n_bad > 0)
+        throw std::runtime_error(
+                "[IB] sw_momentum_flux produced a non-finite stress. Look at "
+                "ustar_ib first.");
+}
+#endif
 #ifndef USECUDA
 template <typename TF>
 void Immersed_boundary<TF>::exec_momentum()
@@ -650,7 +1673,9 @@ void Immersed_boundary<TF>::exec_momentum()
             ghost.at("u").i.data(), ghost.at("u").j.data(), ghost.at("u").k.data(),
             ghost.at("u").ip_i.data(), ghost.at("u").ip_j.data(), ghost.at("u").ip_k.data(),
             Boundary_type::Dirichlet_type, fields.visc, ghost.at("u").i.size(), n_idw_points,
-            gd.icells, gd.ijcells);
+            gd.icells, gd.ijcells,
+            (sw_wall_model != IB_wall_type::Disabled)
+                ? ghost.at("u").a_wall.data() : nullptr);
 
     set_ghost_cells(
             fields.mp.at("v")->fld.data(), ghost.at("v").mbot.data(),
@@ -658,7 +1683,9 @@ void Immersed_boundary<TF>::exec_momentum()
             ghost.at("v").i.data(), ghost.at("v").j.data(), ghost.at("v").k.data(),
             ghost.at("v").ip_i.data(), ghost.at("v").ip_j.data(), ghost.at("v").ip_k.data(),
             Boundary_type::Dirichlet_type, fields.visc, ghost.at("v").i.size(), n_idw_points,
-            gd.icells, gd.ijcells);
+            gd.icells, gd.ijcells,
+            (sw_wall_model != IB_wall_type::Disabled)
+                ? ghost.at("v").a_wall.data() : nullptr);
 
     set_ghost_cells(
             fields.mp.at("w")->fld.data(), ghost.at("w").mbot.data(),
@@ -666,11 +1693,15 @@ void Immersed_boundary<TF>::exec_momentum()
             ghost.at("w").i.data(), ghost.at("w").j.data(), ghost.at("w").k.data(),
             ghost.at("w").ip_i.data(), ghost.at("w").ip_j.data(), ghost.at("w").ip_k.data(),
             Boundary_type::Dirichlet_type, fields.visc, ghost.at("w").i.size(), n_idw_points,
-            gd.icells, gd.ijcells);
+            gd.icells, gd.ijcells,
+            (sw_wall_model != IB_wall_type::Disabled)
+                ? ghost.at("w").a_wall.data() : nullptr);
 
     boundary_cyclic.exec(fields.mp.at("u")->fld.data());
     boundary_cyclic.exec(fields.mp.at("v")->fld.data());
     boundary_cyclic.exec(fields.mp.at("w")->fld.data());
+
+    blank_solid_momentum();
 }
 
 template <typename TF>
@@ -689,10 +1720,150 @@ void Immersed_boundary<TF>::exec_scalars()
                 ghost.at("s").i.data(), ghost.at("s").j.data(), ghost.at("s").k.data(),
                 ghost.at("s").ip_i.data(), ghost.at("s").ip_j.data(), ghost.at("s").ip_k.data(),
                 sbcbot, it.second->visc, ghost.at("s").i.size(), n_idw_points,
-                gd.icells, gd.ijcells);
+                gd.icells, gd.ijcells,
+                (sw_wall_model != IB_wall_type::Disabled)
+                    ? ghost.at("s").a_wall.data() : nullptr);
 
         boundary_cyclic.exec(it.second->fld.data());
     }
+
+    blank_solid_scalars();
+}
+
+template<typename TF>
+void Immersed_boundary<TF>::exec_strain_most()
+{
+    if (sw_ib == IB_type::Disabled || !sw_strain_most)
+        return;
+    if (!fields.sd.count("evisc"))
+        return;
+
+    auto& gd = grid.get_grid_data();
+    TF* const restrict evisc = fields.sd.at("evisc")->fld.data();
+
+    if (!strain_most_built)
+    {
+        strain_most_built = true;
+
+        std::map<int, int> pick;            // ijk -> face index
+        for (int m=0; m<wall.n; ++m)
+        {
+            if (!sw_strain_most_vertical && wall.axis[m] != 2)
+                continue;
+            const int ijk = wall.i[m] + wall.j[m]*gd.icells + wall.k[m]*gd.ijcells;
+            auto it = pick.find(ijk);
+            if (it == pick.end())
+                pick[ijk] = m;
+            else if (wall.axis[m] == 2 && wall.axis[it->second] != 2)
+                it->second = m;             // prefer the floor
+        }
+
+        strain_most_m.clear();
+        strain_most_m.reserve(pick.size());
+        for (const auto& kv : pick)
+            strain_most_m.push_back(kv.second);
+    }
+
+    const TF kappa = Constants::kappa<TF>;
+
+    TF r_lo = TF(1);
+    TF r_hi = TF(0);
+    int n_cells = 0;
+
+    for (const int m : strain_most_m)
+    {
+        const TF us = wall.ustar[m];
+        if (!(us > TF(0)))
+            continue;                       // before the first exec_wall_model
+
+        const TF L    = wall.obuk[m];
+        const TF zeta = (std::abs(L) > TF(1e-12)) ? wall.dn[m] / L : TF(0);
+
+        // r = u* phim / (kappa |U|) = phim * fm / kappa. |U| cancels.
+        TF r = most::phim(zeta) * most::fm(wall.dn[m], wall.z0m[m], L) / kappa;
+        if (!std::isfinite(r))
+            continue;
+        r = std::min(TF(1), std::max(strain_most_min, r));
+
+        const int ijk = wall.i[m] + wall.j[m]*gd.icells + wall.k[m]*gd.ijcells;
+        evisc[ijk] *= r;
+
+        r_lo = std::min(r_lo, r);
+        r_hi = std::max(r_hi, r);
+        ++n_cells;
+    }
+
+    // The diffusion operator reads evisc from the neighbouring ranks too.
+    boundary_cyclic.exec(evisc);
+
+    if (!strain_most_reported && n_cells > 0)
+    {
+        strain_most_reported = true;
+        master.sum(&n_cells, 1);
+        master.min(&r_lo, 1);
+        master.max(&r_hi, 1);
+        master.print_message(
+                "IB: sw_strain_most rescaling evisc on %d wall cell(s), "
+                "factor %.4f .. %.4f (neutral limit is 1/ln(dn/z0m)); "
+                "vertical faces %s\n",
+                n_cells, double(r_lo), double(r_hi),
+                sw_strain_most_vertical ? "included" : "skipped");
+        master.print_message(
+                "IB: expect DNUM to stop being set by the wall cells. If dt "
+                "does not rise, the diffusion limit has moved into the "
+                "interior and this patch has done all it can.\n");
+    }
+}
+template<typename TF>
+void Immersed_boundary<TF>::blank_solid_scalars()
+{
+    if (sw_ib == IB_type::Disabled || !sw_blank_solid)
+        return;
+
+    for (auto& it : fields.sp)
+    {
+        TF* const restrict fld = it.second->fld.data();
+
+        auto it2d = sbot_2d.find(it.first);
+        const bool has_2d = (it2d != sbot_2d.end());
+        const TF s_const = sbc.count(it.first) ? sbc.at(it.first) : TF(0);
+
+        if (has_2d)
+        {
+            const std::vector<TF>& s2d = it2d->second;
+            for (std::size_t n=0; n<blank_s.size(); ++n)
+                fld[blank_s[n]] = s2d[blank_s_ij[n]];
+        }
+        else
+        {
+            for (std::size_t n=0; n<blank_s.size(); ++n)
+                fld[blank_s[n]] = s_const;
+        }
+
+        boundary_cyclic.exec(fld);
+    }
+}
+
+template<typename TF>
+void Immersed_boundary<TF>::blank_solid_momentum()
+{
+    if (sw_ib == IB_type::Disabled || !sw_blank_solid)
+        return;
+
+    TF* const restrict u = fields.mp.at("u")->fld.data();
+    TF* const restrict v = fields.mp.at("v")->fld.data();
+    TF* const restrict w = fields.mp.at("w")->fld.data();
+
+    for (std::size_t n=0; n<blank_u.size(); ++n)
+        u[blank_u[n]] = TF(0);
+    for (std::size_t n=0; n<blank_v.size(); ++n)
+        v[blank_v[n]] = TF(0);
+    for (std::size_t n=0; n<blank_w.size(); ++n)
+        w[blank_w[n]] = TF(0);
+
+    boundary_cyclic.exec(u);
+    boundary_cyclic.exec(v);
+    boundary_cyclic.exec(w);
 }
 #endif
 
@@ -733,13 +1904,73 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
 
         // Read the scalars with spatial patterns
         sbot_spatial_list = inputin.get_list<std::string>("IB", "sbot_spatial", "", std::vector<std::string>());
+        sw_timedep_sbot = inputin.get_item<bool>(
+                "IB", "sw_timedep_sbot", "", false);
+        sbot_timedep_init = false;
+        iloadtime_sbot = 0;
+        itime_sbot_prev = 0;
+        itime_sbot_next = 0;
+        if (sw_timedep_sbot)
+        {
+            if (sbot_spatial_list.empty())
+                throw std::runtime_error(
+                        "[IB] sw_timedep_sbot needs sbot_spatial: there is no "
+                        "2-D surface field to advance in time");
+            iloadtime_sbot = convert_to_itime(
+                    inputin.get_item<int>("IB", "sbot_loadtime", ""));
+        }
     }
+
+    sw_blank_solid = inputin.get_item<bool>("IB", "sw_blank_solid", "", false);
+
+    tPr_ib = inputin.get_item<TF>("diff", "tPr", "", TF(1./3.));
 
     // Check input list of cross variables (crosslist)
     std::vector<std::string>& crosslist_global = cross.get_crosslist();
     std::vector<std::string>::iterator it = crosslist_global.begin();
     while (it != crosslist_global.end())
     {
+
+        // Terrain-following surface diagnostics: taken verbatim, no <scalar>
+        // prefix to strip. See apply_ib_surface_diag.py.
+        {
+            static const char* diag_names[] = {
+                "u_ib1", "v_ib1", "thl_ib1", "qt_ib1",
+                "u_10m_ib", "v_10m_ib",
+                "thl_2m_ib", "qt_2m_ib",
+                "thl_sbot_ib", "qt_sbot_ib",
+                "hfss_ib", "hfls_ib"};
+            bool hit = false;
+            for (const char* nm : diag_names)
+                if (*it == nm) { hit = true; break; }
+            if (hit)
+            {
+                crosslist.push_back(*it);
+                crosslist_global.erase(it);
+                continue;
+            }
+        }
+        if (*it == "ustar_ib" || *it == "obuk_ib" || *it == "ch_ib")
+        {
+            crosslist_wall.push_back(*it);
+            it = crosslist_global.erase(it);
+            continue;
+        }
+        const std::string dsurf_ib_string = "dsurf_ib";
+        if (has_ending(*it, dsurf_ib_string))
+        {
+            std::string scalar = *it;
+            scalar.erase(it->length() - dsurf_ib_string.length());
+            if (fields.sp.find(scalar) != fields.sp.end())
+            {
+                crosslist.push_back(*it);
+                crosslist_global.erase(it);
+            }
+            else
+                ++it;
+            continue;
+        }
+
         const std::string fluxbot_ib_string = "fluxbot_ib";
         if (has_ending(*it, fluxbot_ib_string))
         {
@@ -799,6 +2030,35 @@ void Immersed_boundary<TF>::create()
         fields.release_tmp(tmp);
         boundary_cyclic.exec_2d(dem.data());
 
+        if (sw_dem_halo_replicate)
+        {
+            const int jj = gd.icells;
+
+            if (mpi.mpicoordx == 0)
+                for (int j=0; j<gd.jcells; ++j)
+                    for (int i=0; i<gd.igc; ++i)
+                        dem[i + j*jj] = dem[gd.istart + j*jj];
+
+            if (mpi.mpicoordx == mpi.npx-1)
+                for (int j=0; j<gd.jcells; ++j)
+                    for (int i=gd.iend; i<gd.icells; ++i)
+                        dem[i + j*jj] = dem[(gd.iend-1) + j*jj];
+
+            if (mpi.mpicoordy == 0)
+                for (int j=0; j<gd.jgc; ++j)
+                    for (int i=0; i<gd.icells; ++i)
+                        dem[i + j*jj] = dem[i + gd.jstart*jj];
+
+            if (mpi.mpicoordy == mpi.npy-1)
+                for (int j=gd.jend; j<gd.jcells; ++j)
+                    for (int i=0; i<gd.icells; ++i)
+                        dem[i + j*jj] = dem[i + (gd.jend-1)*jj];
+
+            master.print_message(
+                    "IB: DEM halo replicated at the outer domain edges "
+                    "(sw_dem_halo_replicate=true)\n");
+        }
+
         // Find ghost cells (grid points inside IB, which have at least one
         // neighbouring grid point outside of IB). Different for each
         // location on staggered grid.
@@ -846,7 +2106,7 @@ void Immersed_boundary<TF>::create()
         ghost.at("v").mbot.resize(ghost.at("v").nghost);
         ghost.at("w").mbot.resize(ghost.at("w").nghost);
 
-        std::fill(ghost.at("u").mbot.begin(), ghost.at("u").mbot.begin(), 0.);
+        std::fill(ghost.at("u").mbot.begin(), ghost.at("u").mbot.end(), 0.);
         std::fill(ghost.at("v").mbot.begin(), ghost.at("v").mbot.begin(), 0.);
         std::fill(ghost.at("w").mbot.begin(), ghost.at("w").mbot.begin(), 0.);
 
@@ -886,6 +2146,12 @@ void Immersed_boundary<TF>::create()
                     else
                         master.print_message("OK\n");
 
+
+                    sbot_2d.emplace(scalar.first,
+                                    std::vector<TF>(gd.ijcells, TF(0)));
+                    std::copy(tmp->fld_bot.begin(),
+                              tmp->fld_bot.begin() + gd.ijcells,
+                              sbot_2d.at(scalar.first).begin());
                     // Interpolate 2D sbot onto the ghost cell boundary locations
 
                     for (int i=0; i<ghost.at("s").nghost; ++i)
@@ -906,6 +2172,217 @@ void Immersed_boundary<TF>::create()
         }
 
         // Create the array with vertical indices that give the first cell above the DEM. 
+
+        if (sw_wall_model != IB_wall_type::Disabled)
+        {
+            find_wall_cells<TF>(
+                    wall, dem, gd.x, gd.y, gd.z, gd.dz, gd.dx, gd.dy,
+                    z0m_ib, z0h_ib,
+                    gd.istart, gd.jstart, gd.kstart,
+                    gd.iend,   gd.jend,   gd.kend,
+                    gd.icells, gd.jcells,
+                    mpi_offset_x, mpi_offset_y);
+
+            // The floor face of each column, by 2-D index.
+            std::vector<int> wall_floor(gd.ijcells, -1);
+            for (int m=0; m<wall.n; ++m)
+                if (wall.axis[m] == 2)
+                    wall_floor[wall.i[m] + wall.j[m]*gd.icells] = m;
+
+            // Kept as a member: the momentum wall faces (sw_momentum_flux)
+            // need it to find the u* of the column they sit in.
+            wall_floor_ij = wall_floor;
+            hfss_ij.assign(gd.ijcells, TF(0));
+            hfls_ij.assign(gd.ijcells, TF(0));
+
+            for (auto& sp : fields.sp)
+            {
+                wall_flux.emplace(sp.first, std::vector<TF>(wall.n, TF(0)));
+                wall_value_face.emplace(sp.first, std::vector<TF>(wall.n, TF(0)));
+            }
+
+
+            if (sw_momentum_flux)
+            {
+                find_wall_cells_stag<TF>(
+                        wall_u, dem, gd.xh, gd.y, gd.z, gd.x, gd.y, gd.dz,
+                        gd.dx, gd.dy, z0m_ib, z0h_ib,
+                        gd.istart, gd.jstart, gd.kstart,
+                        gd.iend,   gd.jend,   gd.kend,
+                        gd.icells, gd.jcells, mpi_offset_x, mpi_offset_y);
+
+                find_wall_cells_stag<TF>(
+                        wall_v, dem, gd.x, gd.yh, gd.z, gd.x, gd.y, gd.dz,
+                        gd.dx, gd.dy, z0m_ib, z0h_ib,
+                        gd.istart, gd.jstart, gd.kstart,
+                        gd.iend,   gd.jend,   gd.kend,
+                        gd.icells, gd.jcells, mpi_offset_x, mpi_offset_y);
+
+                auto map_floor = [&](const Wall_cells<TF>& wc,
+                                     std::vector<int>& out, const int di,
+                                     const int dj)
+                {
+                    out.assign(wc.n, -1);
+                    for (int m=0; m<wc.n; ++m)
+                    {
+                        const int ij = wc.i[m] + wc.j[m]*gd.icells;
+                        int mf = wall_floor_ij[ij];
+                        if (mf < 0)
+                            mf = wall_floor_ij[(wc.i[m]-di)
+                                             + (wc.j[m]-dj)*gd.icells];
+                        out[m] = mf;
+                    }
+                };
+                map_floor(wall_u, wall_u_floor, 1, 0);
+                map_floor(wall_v, wall_v_floor, 0, 1);
+
+                int nu_orphan = 0, nv_orphan = 0;
+                for (int m=0; m<wall_u.n; ++m) if (wall_u_floor[m] < 0) ++nu_orphan;
+                for (int m=0; m<wall_v.n; ++m) if (wall_v_floor[m] < 0) ++nv_orphan;
+
+                master.print_message(
+                        "IB: momentum wall faces: %d on the u grid, %d on the "
+                        "v grid (%d and %d with no floor face to take u* "
+                        "from, left on the operator's stress)\n",
+                        wall_u.n, wall_v.n, nu_orphan, nv_orphan);
+            }
+            if (sw_scalar_flux)
+            {
+                int nfloor = 0;
+                for (int m=0; m<wall.n; ++m)
+                    if (wall.axis[m] == 2) ++nfloor;
+                master.print_message(
+                        "IB: scalars exchange through a MOST SOURCE TERM on "
+                        "%d wall faces (%d floor, %d riser); stability on "
+                        "%s\n",
+                        wall.n, nfloor, wall.n - nfloor,
+                        sw_wall_stability_vertical ? "all faces"
+                                                   : "floor faces only");
+            }
+
+
+            auto map_ghosts = [&](
+                    Ghost_cells<TF>& gh, const int axis,
+                    const std::vector<TF>& xl, const std::vector<TF>& yl,
+                    const std::vector<TF>& zl)
+            {
+                gh.a_wall  .assign(gh.nghost, TF(2));
+                gh.nsq     .assign(gh.nghost, TF(0));
+                gh.wall_idx.assign(gh.nghost, -1);
+
+                for (int n=0; n<gh.nghost; ++n)
+                {
+                    const int i = gh.i[n];
+                    const int j = gh.j[n];
+                    const int k = gh.k[n];
+
+                    // Wall normal, from the ghost cell to its wall point.
+                    const TF nx = gh.xb[n] - xl[i];
+                    const TF ny = gh.yb[n] - yl[j];
+                    const TF nz = gh.zb[n] - zl[k];
+                    const TF nn = nx*nx + ny*ny + nz*nz;
+
+                    if (axis >= 0)
+                    {
+                        if (nn < TF(1e-12))
+                            gh.nsq[n] = (axis == 2) ? TF(1) : TF(0);
+                        else
+                        {
+                            const TF nc = (axis == 0) ? nx
+                                        : (axis == 1) ? ny : nz;
+                            gh.nsq[n] = nc*nc / nn;
+                        }
+                    }
+
+                    // The floor face of this column, then of its neighbours.
+                    int m = wall_floor[i + j*gd.icells];
+                    for (int dj=-1; dj<2 && m<0; ++dj)
+                        for (int di2=-1; di2<2 && m<0; ++di2)
+                            m = wall_floor[(i+di2) + (j+dj)*gd.icells];
+                    gh.wall_idx[n] = m;
+                }
+            };
+
+            map_ghosts(ghost.at("u"), 0, gd.xh, gd.y,  gd.z);
+            map_ghosts(ghost.at("v"), 1, gd.x,  gd.yh, gd.z);
+            map_ghosts(ghost.at("w"), 2, gd.x,  gd.y,  gd.zh);
+            if (fields.sp.size() > 0)
+                map_ghosts(ghost.at("s"), -1, gd.x, gd.y, gd.z);
+
+            int nsum = wall.n;
+            int nfloor = 0;
+            for (int m=0; m<wall.n; ++m)
+                if (wall.axis[m] == 2) ++nfloor;
+            master.sum(&nsum, 1);
+            master.sum(&nfloor, 1);
+            master.print_message(
+                    "IB wall model: %s, z0m=%.3e m, z0h=%.3e m, "
+                    "%d exposed faces of which %d floors\n",
+                    (sw_wall_model == IB_wall_type::Most
+                        ? "Monin-Obukhov with stability"
+                        : "neutral log law"),
+                    double(z0m_ib), double(z0h_ib), nsum, nfloor);
+            master.print_message(
+                    "IB wall model: the ghost cells blend between zero flux "
+                    "(a=0) and the Dirichlet mirror (a=2); the wall-normal "
+                    "momentum component always keeps a=2, so no-penetration "
+                    "is unchanged\n");
+        }
+        if (sw_blank_solid)
+        {
+            auto build = [&](
+                    std::vector<int>& idx, std::vector<int>& idx_ij,
+                    const std::vector<TF>& xl,
+                    const std::vector<TF>& yl,
+                    const std::vector<TF>& zl,
+                    const Ghost_cells<TF>* gh)
+            {
+                std::vector<char> is_gh(gd.ncells, 0);
+                if (gh != nullptr)
+                    for (int n=0; n<gh->nghost; ++n)
+                        is_gh[gh->i[n] + gh->j[n]*gd.icells
+                              + gh->k[n]*gd.ijcells] = 1;
+
+                idx.clear();
+                idx_ij.clear();
+
+                for (int k=gd.kstart; k<gd.kend; ++k)
+                    for (int j=gd.jstart; j<gd.jend; ++j)
+                        for (int i=gd.istart; i<gd.iend; ++i)
+                        {
+                            const int ijk = i + j*gd.icells + k*gd.ijcells;
+
+                            if (is_gh[ijk])
+                                continue;
+
+                            if (!is_solid(dem, xl, yl, zl, gd.dx, gd.dy,
+                                          i, j, k, gd.icells, gd.jcells,
+                                          mpi_offset_x, mpi_offset_y))
+                                continue;
+
+                            idx.push_back(ijk);
+                            idx_ij.push_back(i + j*gd.icells);
+                        }
+            };
+
+            std::vector<int> unused;
+
+            build(blank_s, blank_s_ij, gd.x, gd.y, gd.z,
+                  fields.sp.size() > 0 ? &ghost.at("s") : nullptr);
+            build(blank_u, unused, gd.xh, gd.y,  gd.z,  &ghost.at("u"));
+            build(blank_v, unused, gd.x,  gd.yh, gd.z,  &ghost.at("v"));
+            build(blank_w, unused, gd.x,  gd.y,  gd.zh, &ghost.at("w"));
+
+            int ns = blank_s.size();
+            int nu = blank_u.size();
+            master.sum(&ns, 1);
+            master.sum(&nu, 1);
+            master.print_message(
+                    "IB: sw_blank_solid ON - %d scalar and %d u cells inside "
+                    "the terrain are held at their surface value / at rest "
+                    "every substep (ghost cells excluded)\n", ns, nu);
+        }
+
         find_k_dem(
                 k_dem.data(), dem.data(), gd.z.data(),
                 gd.istart, gd.iend, 
@@ -945,7 +2422,6 @@ void Immersed_boundary<TF>::get_mask(Stats<TF>& stats, std::string mask_name)
     fields.release_tmp(maskh);
 }
 
-
 template<typename TF>
 void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
 {
@@ -956,6 +2432,141 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
     {
         for (auto& s : crosslist)
         {
+
+            {
+                static const char* diag_names[] = {
+                    "u_ib1", "v_ib1", "thl_ib1", "qt_ib1",
+                    "u_10m_ib", "v_10m_ib",
+                    "thl_2m_ib", "qt_2m_ib",
+                    "thl_sbot_ib", "qt_sbot_ib",
+                    "hfss_ib", "hfls_ib"};
+
+                bool is_diag = false;
+                for (const char* nm : diag_names)
+                    if (s == nm) { is_diag = true; break; }
+
+                if (is_diag)
+                {
+                    auto tmpd = fields.get_tmp();
+                    std::fill(tmpd->flux_bot.begin(),
+                              tmpd->flux_bot.end(), TF(0));
+
+                    if (s == "hfss_ib" || s == "hfls_ib")
+                    {
+                        const std::vector<TF>& src =
+                                (s == "hfss_ib") ? hfss_ij : hfls_ij;
+                        if (src.size() == size_t(gd.ijcells))
+                            std::copy(src.begin(), src.end(),
+                                      tmpd->flux_bot.begin());
+                    }
+                    else
+                    {
+                        const TF* const u = fields.mp.at("u")->fld.data();
+                        const TF* const v = fields.mp.at("v")->fld.data();
+                        const int ii = 1;
+                        const int jj = gd.icells;
+
+                        for (int m=0; m<wall.n; ++m)
+                        {
+                            if (wall.axis[m] != 2)
+                                continue;           // floor faces only
+                            const int i = wall.i[m];
+                            const int j = wall.j[m];
+                            const int k = wall.k[m];
+                            const int ij  = i + j*jj;
+                            const int ijk = ij + k*gd.ijcells;
+
+                            // The first fluid cell, u and v brought to the
+                            // cell centre so all four variables share a point.
+                            const TF uc = TF(0.5)*(u[ijk] + u[ijk+ii]);
+                            const TF vc = TF(0.5)*(v[ijk] + v[ijk+jj]);
+
+                            const TF z1 = wall.dn[m];
+                            const TF L  = wall.obuk[m];
+
+                            TF val = TF(0);
+                            if (s == "u_ib1")        val = uc;
+                            else if (s == "v_ib1")   val = vc;
+                            else if (s == "thl_ib1" && fields.sp.count("thl"))
+                                val = fields.sp.at("thl")->fld[ijk];
+                            else if (s == "qt_ib1" && fields.sp.count("qt"))
+                                val = fields.sp.at("qt")->fld[ijk];
+                            else if (s == "thl_sbot_ib" || s == "qt_sbot_ib")
+                            {
+                                const std::string sc =
+                                        (s[0] == 't') ? "thl" : "qt";
+                                auto it2d = sbot_2d.find(sc);
+                                val = (it2d != sbot_2d.end())
+                                    ? it2d->second[ij]
+                                    : (sbc.count(sc) ? sbc.at(sc) : TF(0));
+                            }
+                            else if (s == "u_10m_ib" || s == "v_10m_ib")
+                            {
+                                const TF zd = std::max(diag_z_mom,
+                                                       wall.z0m[m]*TF(1.001));
+                                const TF r = most::fm(z1, wall.z0m[m], L)
+                                           / most::fm(zd, wall.z0m[m], L);
+                                val = (s == "u_10m_ib") ? uc * r : vc * r;
+                            }
+                            else if (s == "thl_2m_ib" || s == "qt_2m_ib")
+                            {
+                                const std::string sc =
+                                        (s[0] == 't') ? "thl" : "qt";
+                                if (!fields.sp.count(sc))
+                                    continue;
+                                auto it2d = sbot_2d.find(sc);
+                                const TF pw = (it2d != sbot_2d.end())
+                                        ? it2d->second[ij]
+                                        : (sbc.count(sc) ? sbc.at(sc) : TF(0));
+                                const TF p1 = fields.sp.at(sc)->fld[ijk];
+                                const TF zd = std::max(diag_z_scalar,
+                                                       wall.z0h[m]*TF(1.001));
+                                const TF r = most::fh(z1, wall.z0h[m], L)
+                                           / most::fh(zd, wall.z0h[m], L);
+                                val = pw + (p1 - pw) * r;
+                            }
+
+                            tmpd->flux_bot[ij] = val;
+                        }
+                    }
+
+                    boundary_cyclic.exec_2d(tmpd->flux_bot.data());
+                    cross.cross_plane(tmpd->flux_bot.data(), no_offset,
+                                      s, iotime);
+                    fields.release_tmp(tmpd);
+                    continue;
+                }
+            }
+            const std::string dsurf_ib_string = "dsurf_ib";
+            if (has_ending(s, dsurf_ib_string))
+            {
+                std::string scalar = s;
+                scalar.erase(s.length() - dsurf_ib_string.length());
+
+                auto tmpd = fields.get_tmp();
+                std::fill(tmpd->flux_bot.begin(), tmpd->flux_bot.end(), TF(0));
+
+                const TF* const restrict fld = fields.sp.at(scalar)->fld.data();
+                auto it2d = sbot_2d.find(scalar);
+
+                for (int m=0; m<wall.n; ++m)
+                {
+                    if (wall.axis[m] != 2)
+                        continue;
+                    const int ij  = wall.i[m] + wall.j[m]*gd.icells;
+                    const int ijk = ij + wall.k[m]*gd.ijcells;
+                    const TF pw = (it2d != sbot_2d.end()) ? it2d->second[ij]
+                                                          : sbc.at(scalar);
+                    tmpd->flux_bot[ij] = pw - fld[ijk];
+                }
+
+                boundary_cyclic.exec_2d(tmpd->flux_bot.data());
+                cross.cross_plane(tmpd->flux_bot.data(), no_offset,
+                                  scalar+"_dsurf_ib", iotime);
+                fields.release_tmp(tmpd);
+                continue;
+            }
+
             const std::string fluxbot_ib_string = "fluxbot_ib";
             if (has_ending(s, fluxbot_ib_string))
             {
@@ -963,11 +2574,37 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
                 std::string scalar = s;
                 scalar.erase(s.length() - fluxbot_ib_string.length());
 
+                if (sw_scalar_flux && wall.n > 0 && wall_flux.count(scalar))
+                {
+                    auto tmpw = fields.get_tmp();
+                    std::fill(tmpw->flux_bot.begin(),
+                              tmpw->flux_bot.end(), TF(0));
+
+                    const std::vector<TF>& F = wall_flux.at(scalar);
+                    for (int m=0; m<wall.n; ++m)
+                    {
+                        const int ij = wall.i[m] + wall.j[m]*gd.icells;
+                        const TF w_area =
+                                (wall.axis[m] == 2) ? TF(1)
+                              : (wall.axis[m] == 0) ? gd.dz[wall.k[m]]*gd.dxi
+                                                    : gd.dz[wall.k[m]]*gd.dyi;
+                        tmpw->flux_bot[ij] += F[m] * w_area;
+                    }
+
+                    boundary_cyclic.exec_2d(tmpw->flux_bot.data());
+                    cross.cross_plane(tmpw->flux_bot.data(), no_offset,
+                                      scalar+"_fluxbot_ib", iotime);
+                    fields.release_tmp(tmpw);
+                    continue;
+                }
+
                 auto tmp = fields.get_tmp();
 
                 calc_fluxes(
                         tmp->flux_bot.data(), k_dem.data(),
                         fields.sp.at(scalar)->fld.data(),
+                        fields.sd.at("evisc")->fld.data(),
+                        TF(1) / tPr_ib,
                         gd.dx,  gd.dy,  gd.dz.data(),
                         gd.dxi, gd.dyi, gd.dzhi.data(),
                         fields.sp.at(scalar)->visc,
@@ -981,9 +2618,43 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
                 fields.release_tmp(tmp);
             }
         }
+
+        if (sw_wall_model != IB_wall_type::Disabled)
+        {
+            for (const std::string& name : {"ustar_ib", "obuk_ib", "ch_ib"})
+            {
+                if (std::find(crosslist_wall.begin(), crosslist_wall.end(),
+                              name) == crosslist_wall.end())
+                    continue;
+
+                auto tmp = fields.get_tmp();
+                std::fill(tmp->flux_bot.begin(), tmp->flux_bot.end(), TF(0));
+
+                if (name == "ch_ib")
+                {
+                    for (int m=0; m<wall.n; ++m)
+                        if (wall.axis[m] == 2)
+                            tmp->flux_bot[wall.i[m] + wall.j[m]*gd.icells] =
+                                    wall.ustar[m] * most::fh(wall.dn[m],
+                                                             wall.z0h[m],
+                                                             wall.obuk[m]);
+                }
+                else
+                {
+                const std::vector<TF>& src =
+                        (name == "ustar_ib") ? wall.ustar : wall.obuk;
+
+                for (int m=0; m<wall.n; ++m)
+                    if (wall.axis[m] == 2)
+                        tmp->flux_bot[wall.i[m] + wall.j[m]*gd.icells] = src[m];
+                }
+
+                cross.cross_plane(tmp->flux_bot.data(), no_offset, name, iotime);
+                fields.release_tmp(tmp);
+            }
+        }
     }
 }
-
 
 #ifdef FLOAT_SINGLE
 template class Immersed_boundary<float>;

@@ -30,9 +30,35 @@ class Master;
 class Input;
 template<typename> class Grid;
 template<typename> class Fields;
+template<typename> class Timeloop;
 template<typename> class Cross;
+template<typename> class Thermo;
+template<typename> class Stats;
 
 enum class IB_type {Disabled, DEM, User};
+
+enum class IB_wall_type {Disabled, Neutral, Most};
+
+template<typename TF>
+struct Wall_cells
+{
+    int n;
+
+    std::vector<int> i;      // the FLUID cell that owns the face
+    std::vector<int> j;
+    std::vector<int> k;
+    std::vector<int> axis;   // 0 = wall normal to x, 1 = to y, 2 = to z (floor)
+    std::vector<int> sign;   // -1 solid on the low side, +1 on the high side
+
+    std::vector<TF> dn;      // wall-normal distance of the cell centre  [m]
+    std::vector<TF> da;      // cell extent along the normal
+    std::vector<TF> z0m;
+    std::vector<TF> z0h;
+
+    std::vector<TF> obuk;    // kept between substeps as the iteration's guess
+    std::vector<TF> ustar;
+    std::vector<TF> utan;    // tangential speed used, for diagnostics
+};
 
 // Ghost cell info on staggered grid
 template<typename TF>
@@ -74,6 +100,10 @@ struct Ghost_cells
     // Spatially varying scalar (and momentum..) boundary conditions
     std::map<std::string, std::vector<TF>> sbot;
     std::vector<TF> mbot;
+
+    std::vector<TF> a_wall;
+    std::vector<TF> nsq;
+    std::vector<int> wall_idx;
     
     //
     // GPU 
@@ -133,6 +163,18 @@ class Immersed_boundary
 
         void exec_momentum();
         void exec_scalars();
+        void exec_scalar_flux(Thermo<TF>&, Stats<TF>&);
+        void exec_momentum_flux(Stats<TF>&);
+        void exec_strain_most();
+
+        void exec_impermeable();
+        // Keep the inside of the terrain inert: see [IB] sw_blank_solid.
+        void blank_solid_momentum();
+        void blank_solid_scalars();
+        void update_time_dependent(Timeloop<TF>&);
+        // Re-interpolate the current sbot_2d onto the ghost cells' wall points.
+        void sbot_2d_to_ghosts();
+        void exec_wall_model(Thermo<TF>&, Stats<TF>&);
 
         void exec_cross(Cross<TF>&, unsigned long);
 
@@ -144,7 +186,6 @@ class Immersed_boundary
 
         IB_type get_switch() const { return sw_ib; }
 
-
     private:
         Master& master;
         Grid<TF>& grid;
@@ -155,11 +196,66 @@ class Immersed_boundary
         IB_type sw_ib;
 
         int n_idw_points;       // Number of interpolation points in IDW interpolation
+        bool sw_dem_halo_replicate;  // Fill the DEM halo at the OUTER domain edges
+                                     // by replication instead of cyclically. Correct
+                                     // when the lateral boundaries are open.
 
         // Boundary conditions for scalars
         Boundary_type sbcbot;
         std::map<std::string, TF> sbc;
         std::vector<std::string> sbot_spatial_list;
+        // Monin-Obukhov wall model.
+        IB_wall_type sw_wall_model;
+        TF z0m_ib;
+        TF z0h_ib;
+        TF tPr_wm;                  // [diff] tPr, for the scalar diffusivity
+        Wall_cells<TF> wall;
+        bool sw_momentum_flux;
+        bool sw_momentum_flux_vertical;
+        bool mom_flux_reported;
+        Wall_cells<TF> wall_u;
+        Wall_cells<TF> wall_v;
+        std::vector<int> wall_floor_ij;
+        bool sw_strain_most;
+        bool sw_strain_most_vertical;
+        bool strain_most_reported;
+        bool strain_most_built;
+        TF strain_most_min;
+        std::vector<int> strain_most_m;   // one face index per unique wall cell
+        std::vector<int> wall_u_floor;
+        std::vector<int> wall_v_floor;
+        TF diag_z_mom;
+        TF diag_z_scalar;
+        std::vector<TF> hfss_ij;
+        std::vector<TF> hfls_ij;
+        bool sw_scalar_flux;
+        std::map<std::string, std::vector<TF>> wall_value_face;
+        bool sw_scalar_flux_vertical;
+        bool wall_flux_reported;
+        int  n_zl_clamped_last;
+        bool sw_wall_stability_vertical;
+        bool sw_impermeable;
+        std::map<std::string, std::vector<TF>> wall_flux;
+        std::vector<std::string> crosslist_wall;
+
+        std::map<std::string, std::vector<TF>> sbot_2d;
+
+        bool sw_blank_solid;
+        std::vector<int> blank_s;
+        std::vector<int> blank_s_ij;
+        std::vector<int> blank_u;
+        std::vector<int> blank_v;
+        std::vector<int> blank_w;
+
+        // [diff] tPr, so <scalar>_fluxbot_ib can use the SGS diffusivity.
+        TF tPr_ib;
+        bool sw_timedep_sbot;
+        bool sbot_timedep_init;
+        unsigned long iloadtime_sbot;
+        unsigned long itime_sbot_prev;
+        unsigned long itime_sbot_next;
+        std::map<std::string, std::vector<TF>> sbot_2d_prev;
+        std::map<std::string, std::vector<TF>> sbot_2d_next;
 
         // IB input from DEM
         std::vector<TF> dem;
