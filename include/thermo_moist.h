@@ -145,11 +145,11 @@ class Thermo_moist : public Thermo<TF>
         bool swcross_cape;
 
         // 3D hydrostatic pressure, calculated from 2D pressure @ TOD.
-        bool swphydro_3d;
-        bool swtimedep_phydro_3d;
-        int loadfreq;
-        unsigned long next_itime;
-        unsigned long prev_itime;
+        bool swphydro_3d = false;
+        bool swtimedep_phydro_3d = false;
+        int loadfreq = 0;
+        unsigned long next_itime = 0;
+        unsigned long prev_itime = 0;
         std::vector<TF> phydro_tod;
         std::vector<TF> phydro_tod_prev;
         std::vector<TF> phydro_tod_next;
