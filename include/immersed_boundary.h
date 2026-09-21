@@ -32,6 +32,7 @@ template<typename> class Grid;
 template<typename> class Fields;
 template<typename> class Timeloop;
 template<typename> class Cross;
+template<typename> class Column;
 template<typename> class Thermo;
 template<typename> class Stats;
 
@@ -168,6 +169,8 @@ class Immersed_boundary
         void exec_strain_most();
 
         void exec_impermeable();
+        // Air-only scalar advection next to the terrain: [IB] sw_advec_wall.
+        void exec_advec_wall();
         // Keep the inside of the terrain inert: see [IB] sw_blank_solid.
         void blank_solid_momentum();
         void blank_solid_scalars();
@@ -177,6 +180,11 @@ class Immersed_boundary
         void exec_wall_model(Thermo<TF>&, Stats<TF>&);
 
         void exec_cross(Cross<TF>&, unsigned long);
+        // Column output: the surface diagnostics as time series at the
+        // [column] locations, and the IB mask of that column as a profile.
+        void create_column(Column<TF>&);
+        void exec_column(Column<TF>&, Thermo<TF>&);
+
 
         bool has_mask(std::string);
         void get_mask(Stats<TF>&, std::string);
@@ -237,8 +245,38 @@ class Immersed_boundary
         bool sw_impermeable;
         std::map<std::string, std::vector<TF>> wall_flux;
         std::vector<std::string> crosslist_wall;
+        /*
+         * The single implementation of every terrain-following surface
+         * diagnostic. Fills `out` (ijcells) and returns false if the name is
+         * not one it knows. exec_cross and exec_column BOTH call it, so a
+         * cross-section and a column time series of the same quantity are the
+         * same number by construction.
+         */
+        bool calc_surface_diag(const std::string&, TF* const restrict);
+
+        // What [IB] columnlist asked for, already resolved to canonical names.
+        std::vector<std::string> columnlist;
+
+        /*
+         * The base-state exner, cached the first time a Thermo is in reach
+         * (exec_wall_model and exec_column both have one; exec_cross does
+         * not). Only T_2m_ib needs it. The anelastic base state does not
+         * change in time here - swphydro_3d is off - so one copy is enough.
+         */
+        std::vector<TF> exner_ref;
+
 
         std::map<std::string, std::vector<TF>> sbot_2d;
+
+        // [IB] sw_advec_wall - apply_ib_advec_wall.py. One list per axis of
+        // the faces whose 2i5 stencil touches a solid cell, each face stored
+        // as the index of the cell on its HIGH side (the face lies between
+        // c-d and c), with what to replace its flux by.
+        bool sw_advec_wall;
+        bool advec_wall_reported;
+        std::vector<std::string> advec_wall_limited;   // [advec] fluxlimit_list
+        std::vector<int> advec_face_ijk[3];
+        std::vector<signed char> advec_face_cls[3];
 
         bool sw_blank_solid;
         std::vector<int> blank_s;
