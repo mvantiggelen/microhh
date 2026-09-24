@@ -195,7 +195,19 @@ namespace Advec_monotonic
                          - ( flux_lim(v[ijk+jj1], s[ijk-jj1], s[ijk    ], s[ijk+jj1], s[ijk+jj2])
                            - flux_lim(v[ijk    ], s[ijk-jj2], s[ijk-jj1], s[ijk    ], s[ijk+jj1]) ) * dyi
 
-                         - ( // No flux through boundary
+                         // The flux through the LID. Zero for a closed lid, so
+                         // this term vanishes identically in a standard run -
+                         // but with open lateral boundaries w(kend) is the
+                         // prescribed w_top and is NOT zero, and leaving the
+                         // term out makes the top cell a sink of strength
+                         // w_top*phi/dz (-0.19 K/s at w_top=-0.01 m/s,
+                         // dz=15 m). First-order upwind: the donor cell, which
+                         // for inflow is the ghost cell set by [boundary]
+                         // sbctop. advec_s (unlimited) and advec_u/v/w already
+                         // carry this face. See apply_advec_lim_top.py.
+                         - ( rhorefh[k+1] * ( (w[ijk+kk1] > TF(0.))
+                                              ? w[ijk+kk1] * s[ijk        ]
+                                              : w[ijk+kk1] * s[ijk+kk1    ] )
                            - rhorefh[k  ] * flux_lim_top(w[ijk    ], s[ijk-kk2], s[ijk-kk1], s[ijk    ], s[ijk+kk1]) ) / rhoref[k] * dzi[k];
             }
     }

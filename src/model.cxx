@@ -276,7 +276,6 @@ void Model<TF>::load()
     subdomain->create();
 
     ib->create();
-    ib->create_column(*column);
     buffer->create(*input, *input_nc, *stats, *timeloop);
     force->create(*input, *input_nc, *stats, *timeloop);
     source->create(*input, *input_nc);
@@ -470,8 +469,6 @@ void Model<TF>::exec()
                 boundary->set_ghost_cells_w(Boundary_w_type::Conservation_type);
                 advec->exec(*stats);
                 check("advec");
-                // Air-only scalar fluxes next to the terrain: [IB] sw_advec_wall.
-                ib->exec_advec_wall();
                 boundary->set_ghost_cells_w(Boundary_w_type::Normal_type);
 
                 // Calculate the diffusion tendency.
@@ -575,7 +572,6 @@ void Model<TF>::exec()
                         thermo   ->exec_column(*column);
                         radiation->exec_column(*column, *thermo, *timeloop);
                         boundary ->exec_column(*column, *thermo);
-                        ib       ->exec_column(*column, *thermo);
                         microphys->exec_column(*column);
 
                         #pragma omp critical

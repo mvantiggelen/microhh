@@ -154,6 +154,24 @@ namespace
     }
 
 
+    // Shape of the lateral sponge weight across the relaxation band.
+    //
+    // `x` is the LINEAR weight the kernels used to apply directly: 1 at the
+    // outermost sponge cell, 1/nsponge (u,v) or 0.5/nsponge (scalars) at the
+    // innermost one, and 0 in the first interior cell. That profile stops at
+    // a non-zero value and then steps to zero in one cell, which puts a
+    // discontinuity in the momentum tendency - and therefore in the
+    // divergence, and therefore in w - at the inner edge of the sponge.
+    //
+    // S(x) = x^2*(3-2x) keeps both ends and has dS/dx = 0 at both, so the
+    // nudging dies away smoothly into the interior. See apply_sponge_taper.py.
+    template<typename TF>
+    inline TF sponge_taper(const TF x)
+    {
+        return x*x*(TF(3) - TF(2)*x);
+    }
+
+
     template<typename TF, Lbc_location location>
     void lateral_sponge_kernel_u(
             TF* const restrict ut,
@@ -194,8 +212,9 @@ namespace
                     const TF u_diff = diffusion_3x3x3(
                             u, lbc_u[ijk_lbc], ijk, icells, ijcells);
 
-                    // Nudge coefficient.
-                    const TF f_sponge = (TF(1)+nsponge-n) / nsponge;
+                    // Nudge coefficient, smoothly tapered to zero at the
+                    // inner edge of the band (see sponge_taper).
+                    const TF f_sponge = sponge_taper<TF>((TF(1)+nsponge-n) / nsponge);
                     const TF w1n = w_dt * f_sponge;
                     const TF w2n = w_diff * f_sponge;
 
@@ -243,8 +262,9 @@ namespace
                     const TF v_diff = diffusion_3x3x3(
                             v, lbc_v[ijk_lbc], ijk, icells, ijcells);
 
-                    // Nudge coefficient.
-                    const TF f_sponge = (TF(1)+nsponge-n) / nsponge;
+                    // Nudge coefficient, smoothly tapered to zero at the
+                    // inner edge of the band (see sponge_taper).
+                    const TF f_sponge = sponge_taper<TF>((TF(1)+nsponge-n) / nsponge);
                     const TF w1n = w_dt * f_sponge;
                     const TF w2n = w_diff * f_sponge;
 
@@ -301,8 +321,9 @@ namespace
                         const TF a_diff = diffusion_3x3x3(
                                 a, lbc[ijk_lbc], ijk, icells, ijcells);
 
-                        // Nudge coefficient.
-                        const TF f_sponge = (TF(1)+nsponge-(n+TF(0.5))) / nsponge;
+                        // Nudge coefficient, smoothly tapered to zero at the
+                        // inner edge of the band (see sponge_taper).
+                        const TF f_sponge = sponge_taper<TF>((TF(1)+nsponge-(n+TF(0.5))) / nsponge);
                         const TF w1n = w_dt * f_sponge;
                         const TF w2n = w_diff * f_sponge;
 
@@ -351,8 +372,9 @@ namespace
                         const TF a_diff = diffusion_3x3x3(
                                 a, lbc[ijk_lbc], ijk, icells, ijcells);
 
-                        // Nudge coefficient.
-                        const TF f_sponge = (TF(1)+nsponge-(n+TF(0.5))) / nsponge;
+                        // Nudge coefficient, smoothly tapered to zero at the
+                        // inner edge of the band (see sponge_taper).
+                        const TF f_sponge = sponge_taper<TF>((TF(1)+nsponge-(n+TF(0.5))) / nsponge);
                         const TF w1n = w_dt * f_sponge;
                         const TF w2n = w_diff * f_sponge;
 

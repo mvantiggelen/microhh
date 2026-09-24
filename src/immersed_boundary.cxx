@@ -1951,6 +1951,13 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
 
     tPr_ib = inputin.get_item<TF>("diff", "tPr", "", TF(1./3.));
 
+    // Terrain-following xy cross-sections. The heights live here rather than
+    // in the crosslist names, so that changing them does not mean editing
+    // [cross] crosslist. See apply_ib_tf_cross.py.
+    sw_tf_cross = inputin.get_item<bool>("IB", "sw_tf_cross", "", false);
+    tf_cross_heights = inputin.get_list<TF>(
+            "IB", "tf_cross_heights", "", std::vector<TF>());
+
 
     // ---- [IB] columnlist ---------------------------------------------------
     // Aliases are accepted so the .ini can use the short names people write on
@@ -1993,6 +2000,32 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
     std::vector<std::string>::iterator it = crosslist_global.begin();
     while (it != crosslist_global.end())
     {
+
+        // Terrain-following xy planes: <var>_tf (one plane per
+        // [IB] tf_cross_heights) or <var>_tf<h>. See apply_ib_tf_cross.py.
+        if (sw_tf_cross)
+        {
+            const size_t p_tf = it->rfind("_tf");
+            const bool shaped = p_tf != std::string::npos
+                    && (p_tf + 3 == it->size()
+                        || it->find_first_not_of("0123456789", p_tf+3)
+                           == std::string::npos);
+            if (shaped)
+            {
+                const std::string var = it->substr(0, p_tf);
+                const bool known_var = (var == "u" || var == "v" || var == "w"
+                        || var == "wspd" || var == "wdir"
+                        || fields.sp.find(var) != fields.sp.end());
+                const bool have_h = (p_tf + 3 < it->size())
+                        || !tf_cross_heights.empty();
+                if (known_var && have_h)
+                {
+                    crosslist.push_back(*it);
+                    it = crosslist_global.erase(it);
+                    continue;
+                }
+            }
+        }
 
         // Terrain-following surface diagnostics: taken verbatim, no <scalar>
         // prefix to strip. See apply_ib_surface_diag.py.
@@ -3053,6 +3086,121 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
     {
         for (auto& s : crosslist)
         {
+            // ---- terrain-following xy planes: <var>_tf / <var>_tf<h> -----
+            // A horizontal slice at a fixed height ABOVE THE LOCAL SURFACE.
+            // `<var>_tf` writes one plane per [IB] tf_cross_heights entry;
+            // `<var>_tf<h>` writes that one height. See apply_ib_tf_cross.py.
+            {
+                const size_t p_tf = s.rfind("_tf");
+                const bool is_tf = sw_tf_cross && p_tf != std::string::npos
+                        && (p_tf + 3 == s.size()
+                            || s.find_first_not_of("0123456789", p_tf+3)
+                               == std::string::npos);
+                if (is_tf)
+                {
+                    const std::string var = s.substr(0, p_tf);
+
+                    std::vector<TF> heights;
+                    if (p_tf + 3 == s.size())
+                        heights = tf_cross_heights;
+                    else
+                        heights.push_back(TF(std::stod(s.substr(p_tf+3))));
+
+                    const bool want_wspd = (var == "wspd");
+                    const bool want_wdir = (var == "wdir");
+                    const bool want_uv   = (var == "u" || var == "v"
+                                            || want_wspd || want_wdir);
+                    const bool want_w    = (var == "w");
+
+                    const TF* fld = nullptr;
+                    if (!want_uv && !want_w)
+                    {
+                        if (fields.sp.find(var) == fields.sp.end())
+                            continue;               // unknown: nothing to do
+                        fld = fields.sp.at(var)->fld.data();
+                    }
+
+                    const TF* const uf = fields.mp.at("u")->fld.data();
+                    const TF* const vf = fields.mp.at("v")->fld.data();
+                    const TF* const wf = fields.mp.at("w")->fld.data();
+                    const std::vector<TF>& zax = want_w ? gd.zh : gd.z;
+                    const TF rad2deg = TF(180) / std::acos(TF(-1));
+
+                    auto tmpd = fields.get_tmp();
+                    const int ii = 1;
+                    const int jj = gd.icells;
+
+                    for (size_t q=0; q<heights.size(); ++q)
+                    {
+                        const TF h_tf = heights[q];
+                        std::fill(tmpd->flux_bot.begin(),
+                                  tmpd->flux_bot.end(), TF(0));
+
+                        for (int j=gd.jstart; j<gd.jend; ++j)
+                            for (int i=gd.istart; i<gd.iend; ++i)
+                            {
+                                const int ij = i + j*jj;
+                                const TF zt = dem[ij] + h_tf;
+
+                                // The two levels bracketing zt, never below
+                                // the column's first AIR level: below that is
+                                // rock, and the value there is not a value.
+                                int k0 = std::max(int(k_dem[ij]), gd.kstart);
+                                while (k0+1 < gd.kend && zax[k0+1] <= zt)
+                                    ++k0;
+                                const int k1 = std::min(k0+1, gd.kend-1);
+                                TF f = TF(0);
+                                if (k1 > k0 && zax[k1] > zax[k0])
+                                    f = std::min(std::max(
+                                            (zt - zax[k0])/(zax[k1] - zax[k0]),
+                                            TF(0)), TF(1));
+
+                                const int ijk0 = ij + k0*gd.ijcells;
+                                const int ijk1 = ij + k1*gd.ijcells;
+
+                                TF val = TF(0);
+                                if (want_w)
+                                    val = (TF(1)-f)*wf[ijk0] + f*wf[ijk1];
+                                else if (want_uv)
+                                {
+                                    // to the cell centre, so u, v, wspd and
+                                    // wdir all sit on the same point
+                                    const TF u0 = TF(0.5)*(uf[ijk0] + uf[ijk0+ii]);
+                                    const TF u1 = TF(0.5)*(uf[ijk1] + uf[ijk1+ii]);
+                                    const TF v0 = TF(0.5)*(vf[ijk0] + vf[ijk0+jj]);
+                                    const TF v1 = TF(0.5)*(vf[ijk1] + vf[ijk1+jj]);
+                                    const TF uc = (TF(1)-f)*u0 + f*u1;
+                                    const TF vc = (TF(1)-f)*v0 + f*v1;
+                                    const TF sp = std::sqrt(uc*uc + vc*vc);
+                                    if (var == "u")          val = uc;
+                                    else if (var == "v")     val = vc;
+                                    else if (want_wspd)      val = sp;
+                                    else
+                                        // meteorological: the direction it
+                                        // comes FROM, clockwise from north
+                                        val = (sp > TF(0))
+                                            ? std::fmod(TF(270)
+                                                - std::atan2(vc, uc)*rad2deg
+                                                + TF(360), TF(360))
+                                            : TF(0);
+                                }
+                                else
+                                    val = (TF(1)-f)*fld[ijk0] + f*fld[ijk1];
+
+                                tmpd->flux_bot[ij] = val;
+                            }
+
+                        boundary_cyclic.exec_2d(tmpd->flux_bot.data());
+                        const std::string name_h = var + "_tf"
+                                + std::to_string(int(std::lround(h_tf)));
+                        cross.cross_plane(tmpd->flux_bot.data(), no_offset,
+                                          name_h, iotime);
+                    }
+                    fields.release_tmp(tmpd);
+                    continue;
+                }
+            }
+
 
             {
                 // One implementation, two outputs. Everything the inline

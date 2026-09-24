@@ -299,6 +299,11 @@ class Immersed_boundary
         std::vector<TF> dem;
         std::vector<unsigned int> k_dem;
 
+        // Terrain-following xy cross-sections, <var>_tf<h>. See
+        // apply_ib_tf_cross.py.
+        bool sw_tf_cross;
+        std::vector<TF> tf_cross_heights;
+
         // All ghost cell properties
         std::map<std::string, Ghost_cells<TF>> ghost;
 
