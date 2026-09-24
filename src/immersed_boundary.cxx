@@ -1163,6 +1163,15 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
                 sw_wall_model != IB_wall_type::Disabled);
         sw_strain_most_vertical = inputin.get_item<bool>(
                 "IB", "sw_strain_most_vertical", "", false);
+
+        // Mason's wall damping uses the height above the DOMAIN FLOOR, which
+        // over terrain is not the distance to the wall. cs and swmason are
+        // read here so the correction can reproduce what Diff_smag2 did and
+        // divide it out. See apply_ib_wall_mlen.py.
+        sw_strain_mlen = inputin.get_item<bool>(
+                "IB", "sw_strain_mlen", "", true);
+        cs_ib = inputin.get_item<TF>("diff", "cs", "", TF(0.23));
+        sw_mason_ib = inputin.get_item<bool>("diff", "swmason", "", true);
         strain_most_min = inputin.get_item<TF>(
                 "IB", "strain_most_min", "", TF(0.05));
         strain_most_reported = false;
@@ -1795,6 +1804,24 @@ void Immersed_boundary<TF>::exec_strain_most()
             continue;
         r = std::min(TF(1), std::max(strain_most_min, r));
 
+        // Mason damped the mixing length with the height above the FLAT
+        // FLOOR. Replace that distance by the distance to the wall this cell
+        // actually sits against. See apply_ib_wall_mlen.py.
+        if (sw_strain_mlen)
+        {
+            const int k = wall.k[m];
+            const TF mlen0 = cs_ib * std::pow(gd.dx*gd.dy*gd.dz[k], TF(1./3.));
+            const TF z0 = wall.z0m[m];
+            const TF mlen_z = sw_mason_ib
+                ? TF(1.) / (TF(1.)/mlen0 + TF(1.)/(kappa*(gd.z[k] + z0)))
+                : mlen0;
+            const TF mlen_d =
+                  TF(1.) / (TF(1.)/mlen0 + TF(1.)/(kappa*(wall.dn[m] + z0)));
+            TF f = (mlen_z > TF(0)) ? fm::pow2(mlen_d/mlen_z) : TF(1);
+            f = std::min(TF(1), std::max(TF(1e-3), f));
+            r *= f;
+        }
+
         const int ijk = wall.i[m] + wall.j[m]*gd.icells + wall.k[m]*gd.ijcells;
         evisc[ijk] *= r;
 
@@ -1818,6 +1845,11 @@ void Immersed_boundary<TF>::exec_strain_most()
                 "vertical faces %s\n",
                 n_cells, double(r_lo), double(r_hi),
                 sw_strain_most_vertical ? "included" : "skipped");
+        if (sw_strain_mlen)
+            master.print_message(
+                    "IB: sw_strain_mlen ON - the Smagorinsky length is damped "
+                    "on the distance to the IB wall, not on the height above "
+                    "the domain floor. The factor above includes it.\n");
         master.print_message(
                 "IB: expect DNUM to stop being set by the wall cells. If dt "
                 "does not rise, the diffusion limit has moved into the "

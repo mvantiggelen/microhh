@@ -227,6 +227,12 @@ class Immersed_boundary
         bool sw_strain_most;
         bool sw_strain_most_vertical;
         bool strain_most_reported;
+
+        // Wall damping of the Smagorinsky length at the IB. See
+        // apply_ib_wall_mlen.py.
+        bool sw_strain_mlen;
+        bool sw_mason_ib;
+        TF cs_ib;
         bool strain_most_built;
         TF strain_most_min;
         std::vector<int> strain_most_m;   // one face index per unique wall cell
