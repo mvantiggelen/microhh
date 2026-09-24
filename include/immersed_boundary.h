@@ -35,6 +35,8 @@ template<typename> class Cross;
 template<typename> class Column;
 template<typename> class Thermo;
 template<typename> class Stats;
+template<typename> class Radiation;
+class Netcdf_handle;
 
 enum class IB_type {Disabled, DEM, User};
 
@@ -160,11 +162,14 @@ class Immersed_boundary
         ~Immersed_boundary();
 
         void init(Input&, Cross<TF>&);
-        void create();
+        void create(Netcdf_handle&);
 
         void exec_momentum();
         void exec_scalars();
-        void exec_scalar_flux(Thermo<TF>&, Stats<TF>&);
+        void exec_scalar_flux(Thermo<TF>&, Radiation<TF>&, Stats<TF>&);
+        // Tundra as a canopy: the resistance-limited surface humidity.
+        // See apply_ib_vegetation.py.
+        void exec_vegetation(Thermo<TF>&, Radiation<TF>&);
         void exec_momentum_flux(Stats<TF>&);
         void exec_strain_most();
 
@@ -227,6 +232,10 @@ class Immersed_boundary
         bool sw_strain_most;
         bool sw_strain_most_vertical;
         bool strain_most_reported;
+
+        // One-shot diffusion-number probe. See apply_ib_dnum_probe.py.
+        bool dn_probe_done;
+        TF dnmax_ib;
 
         // Wall damping of the Smagorinsky length at the IB. See
         // apply_ib_wall_mlen.py.
@@ -300,6 +309,46 @@ class Immersed_boundary
         unsigned long itime_sbot_next;
         std::map<std::string, std::vector<TF>> sbot_2d_prev;
         std::map<std::string, std::vector<TF>> sbot_2d_next;
+
+        /*
+         * [IB] sw_vegetation - apply_ib_vegetation.py.
+         *
+         * The IB surface as a canopy rather than as free water. Everything
+         * here is per column (ijcells) except the soil profile, which is one
+         * column shared by the whole domain, and the van Genuchten table,
+         * which is one entry per soil class.
+         */
+        bool sw_vegetation;
+        bool veg_reported;
+        int  veg_soil_ktot;
+
+        std::vector<TF> veg_c_veg;        // vegetation cover fraction   [-]
+        std::vector<TF> veg_lai;          // leaf area index        [m2 m-2]
+        std::vector<TF> veg_rs_veg_min;   // min canopy resistance   [s m-1]
+        std::vector<TF> veg_rs_soil_min;  // min soil resistance     [s m-1]
+        std::vector<TF> veg_gD;           // VPD response             [Pa-1]
+
+        // Diagnostics, one per column, rebuilt every substep.
+        std::vector<TF> veg_ra;           // aerodynamic resistance  [s m-1]
+        std::vector<TF> veg_rs;           // effective surface resistance
+        std::vector<TF> veg_f1;           // radiation stress            [-]
+        std::vector<TF> veg_f3;           // VPD stress                  [-]
+        std::vector<TF> veg_vpd;          // vapour pressure deficit    [Pa]
+        std::vector<TF> veg_qt_bot;       // the surface value actually used
+
+        // The soil, PER COLUMN: (ktot, ijcells), bottom-up, so index
+        // (sk-1)*ijcells + ij is the top layer - the same order the MicroHH
+        // LSM and soil_grid.cxx use. Static in patch 17 (RACMO's state at
+        // t=0, held); patch 18 integrates it.
+        std::vector<TF> veg_t_soil;
+        std::vector<TF> veg_theta_soil;
+        std::vector<TF> veg_root_frac;    // 1-D over the soil levels
+        std::vector<int> veg_soil_index;  // 1-D over the soil levels
+        // f2 (root-zone moisture) and f2b (top-layer moisture), per column.
+        // Scalars until the soil became per column; now one value each per
+        // column, still computed once because the soil does not move.
+        std::vector<TF> veg_f2;
+        std::vector<TF> veg_f2b;
 
         // IB input from DEM
         std::vector<TF> dem;

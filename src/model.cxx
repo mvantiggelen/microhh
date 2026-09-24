@@ -275,7 +275,7 @@ void Model<TF>::load()
     lbc->create(*input, *timeloop, *stats, sim_name);
     subdomain->create();
 
-    ib->create();
+    ib->create(*input_nc);
     buffer->create(*input, *input_nc, *stats, *timeloop);
     force->create(*input, *input_nc, *stats, *timeloop);
     source->create(*input, *input_nc);
@@ -476,7 +476,7 @@ void Model<TF>::exec()
                 check("diff");
 
                 // The IB surface exchange for scalars, as a source term.
-                ib->exec_scalar_flux(*thermo, *stats);
+                ib->exec_scalar_flux(*thermo, *radiation, *stats);
                 // the tangential stress, same pattern, on the u and v
                 ib->exec_momentum_flux(*stats);
                 check("ib_scalar_flux");

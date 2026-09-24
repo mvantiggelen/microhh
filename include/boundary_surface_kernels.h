@@ -373,6 +373,61 @@ namespace Boundary_surface_kernels
         return zsl/std::min(std::max(zsl/L, Constants::zL_min<TF>), Constants::zL_max<TF>);
     }
 
+    /*
+     * The same similarity balance, solved by BISECTION on zeta = zsl/L over
+     * the branch the sign of db selects. Slower than Newton and immune to the
+     * thing Newton does wrong here: a bracketed method cannot leave its
+     * bracket, so it cannot converge onto the other branch's root.
+     *
+     * The bracket is valid by construction. Write the residual as
+     *
+     *     h(zeta) = zeta - kappa*zsl*db*fh / (du*fm)^2
+     *
+     * As zeta -> 0 the first term vanishes and h takes the sign of -db; at
+     * the far end of the bracket |zeta| dominates and h takes the sign of
+     * zeta, which is the sign of db. So h always changes sign inside, and the
+     * check below is a guard for the arithmetic, not for the mathematics.
+     *
+     * See apply_obuk_branch_fix.py.
+     */
+    template<typename TF>
+    inline TF solve_zL_bisect(
+            const TF du, const TF db, const TF zsl, const TF z0m, const TF z0h)
+    {
+        const TF eps = TF(1e-12);
+        TF lo, hi;
+        if (db < TF(0)) { lo = Constants::zL_min<TF>; hi = -eps; }
+        else            { lo = eps;                   hi = Constants::zL_max<TF>; }
+
+        auto h = [&](const TF zeta)
+        {
+            const TF L = zsl / zeta;
+            return zeta - Constants::kappa<TF> * zsl * db
+                          * most::fh(zsl, z0h, L)
+                          / fm::pow2(du * most::fm(zsl, z0m, L));
+        };
+
+        TF flo = h(lo);
+        TF fhi = h(hi);
+        if (!std::isfinite(flo) || !std::isfinite(fhi) || flo * fhi > TF(0))
+            // No sign change to work with. Return the most extreme zeta on
+            // the correct branch, which is what the zL clamp would do anyway
+            // - and is at least on the right side of neutral.
+            return zsl / (db < TF(0) ? Constants::zL_min<TF>
+                                     : Constants::zL_max<TF>);
+
+        for (int i = 0; i < 80; ++i)
+        {
+            const TF mid = TF(0.5) * (lo + hi);
+            const TF fmid = h(mid);
+            if (!std::isfinite(fmid))
+                break;
+            if (flo * fmid <= TF(0)) { hi = mid; fhi = fmid; }
+            else                     { lo = mid; flo = fmid; }
+        }
+        return zsl / (TF(0.5) * (lo + hi));
+    }
+
     template<typename TF>
     TF calc_obuk_noslip_dirichlet_iterative(
             TF L, const TF du, TF db, const TF zsl, const TF z0m, const TF z0h)
@@ -465,6 +520,22 @@ namespace Boundary_surface_kernels
             std::cout << "ERROR: no convergence Rib->L: du=" << du << ", db=" << db << ", z0m=" << z0m << ", z0h=" << z0h << " | returning L=" << L <<  std::endl;
             #endif
         }
+
+        /*
+         * Did Newton answer on the RIGHT BRANCH?
+         *
+         * db < 0 is a warmer surface and must give L < 0; db > 0 must give
+         * L > 0. `L*db <= 0` is the wrong branch - the same test this routine
+         * already uses at the top of the loop to decide on a reset, applied
+         * here to the answer instead of to the starting guess.
+         *
+         * Without this the routine happily returns a near-neutral POSITIVE L
+         * for a strongly convective surface layer and reports convergence,
+         * because every exit test it has is about the size of the Newton step
+         * rather than about the physics. See apply_obuk_branch_fix.py.
+         */
+        if (L * db <= TF(0) || !std::isfinite(L))
+            L = solve_zL_bisect<TF>(du, db, zsl, z0m, z0h);
 
         // Limits same as LUT solver:
         return zsl/std::min(std::max(zsl/L, Constants::zL_min<TF>), Constants::zL_max<TF>);

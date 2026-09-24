@@ -43,9 +43,133 @@
 #include <limits>
 #include "finite_difference.h"   // interp6_ws/interp5_ws/interp4_ws/interp3_ws
 #include "advec_monotonic.h"     // Koren flux_lim, as advec_2i5 uses it
+#include "thermo_moist_functions.h"  // sat_adjust/esat, for the IB canopy
+#include "radiation.h"               // surface SW down, for f1
+#include "netcdf_interface.h"        // the soil group of the case input
 
 namespace
 {
+    /*
+     * The IB canopy. One pass over the columns; each column uses its own
+     * floor face for ra and its own first fluid cell for the air state.
+     *
+     * Every formula below is lifted from include/land_surface_kernels.h:
+     *   f1, f3            lsmk::calc_resistance_functions
+     *   rs_veg            lsmk::calc_canopy_resistance
+     *   rs_soil           lsmk::calc_soil_resistance
+     *   the tile weights  lsmk::calc_tile_fractions with wl = 0
+     *   qt_bot            the last line of lsmk::calc_fluxes
+     * f2 and f2b are passed in: with a prescribed soil they are constants.
+     *
+     * qsat_bot is what the preprocessing wrote as the surface humidity, i.e.
+     * q_sat(Ts). With rs_veg_min = rs_soil_min = 0 this routine returns it
+     * unchanged, bit for bit.
+     */
+    template<typename TF>
+    void ib_vegetation_kernel(
+            TF* const restrict qt_bot,
+            TF* const restrict ra_out,
+            TF* const restrict rs_out,
+            TF* const restrict f1_out,
+            TF* const restrict f3_out,
+            TF* const restrict vpd_out,
+            const TF* const restrict thl,
+            const TF* const restrict qt,
+            const TF* const restrict qsat_bot,
+            const TF* const restrict sw_dn,
+            const TF* const restrict c_veg,
+            const TF* const restrict lai,
+            const TF* const restrict rs_veg_min,
+            const TF* const restrict rs_soil_min,
+            const TF* const restrict gD,
+            const TF* const restrict f2,
+            const TF* const restrict f2b,
+            const TF* const restrict pref,
+            const TF* const restrict exnref,
+            const std::vector<int>& floor_ij,
+            const std::vector<int>& wk,
+            const std::vector<TF>& wdn,
+            const std::vector<TF>& wz0h,
+            const std::vector<TF>& ustar,
+            const std::vector<TF>& obuk,
+            const int istart, const int iend,
+            const int jstart, const int jend,
+            const int icells, const int ijcells)
+    {
+        namespace tmf  = Thermo_moist_functions;
+        namespace most = Monin_obukhov;
+
+        // lsmk::calc_resistance_functions, f1.
+        const TF a_f1 = TF(0.81);
+        const TF b_f1 = TF(0.004);
+        const TF c_f1 = TF(0.05);
+
+        for (int j=jstart; j<jend; ++j)
+            for (int i=istart; i<iend; ++i)
+            {
+                const int ij = i + j*icells;
+
+                // Default: exactly what the code did before this patch.
+                qt_bot [ij] = qsat_bot[ij];
+                ra_out [ij] = TF(0);
+                rs_out [ij] = TF(0);
+                f1_out [ij] = TF(0);
+                f3_out [ij] = TF(0);
+                vpd_out[ij] = TF(0);
+
+                const int m = floor_ij[ij];
+                if (m < 0)
+                    continue;                       // no floor face here
+
+                const int k   = wk[m];
+                const int ijk = ij + k*ijcells;
+
+                // The air state at the first fluid cell of this column, the
+                // same level the wall model took its wind from.
+                const auto sa = tmf::sat_adjust(
+                        thl[ijk], qt[ijk], pref[k], exnref[k]);
+
+                const TF es  = tmf::esat(sa.t);
+                const TF e   = qt[ijk] / sa.qs * es;
+                const TF vpd = std::max(TF(0), es - e);
+
+                const TF swl = std::max(TF(0), sw_dn[ij]);
+                const TF f1  = TF(1) / std::min(TF(1),
+                        (b_f1*swl + c_f1) / (a_f1 * (b_f1*swl + TF(1))));
+                const TF f3  = TF(1) / std::exp(-gD[ij] * vpd);
+
+                const TF rs_veg  = rs_veg_min[ij]
+                                 / (lai[ij] + TF(Constants::dsmall))
+                                 * f1 * f2[ij] * f3;
+                const TF rs_soil = rs_soil_min[ij] * f2b[ij];
+
+                // The wall model already ran this substep, so ustar and obuk
+                // are current. ra is its exchange velocity, inverted.
+                const TF ch = ustar[m] * most::fh(wdn[m], wz0h[m], obuk[m]);
+                const TF ra = TF(1) / std::max(TF(Constants::dsmall), ch);
+
+                /*
+                 * Dew. lsmk::calc_fluxes sets rs to zero when the surface is
+                 * drier than the air, because condensation does not pass
+                 * through stomata. Same rule here.
+                 */
+                const TF cv = std::min(TF(1), std::max(TF(0), c_veg[ij]));
+                const TF g  = (qsat_bot[ij] < qt[ijk])
+                            ? TF(1) / ra
+                            : cv / (ra + rs_veg)
+                              + (TF(1) - cv) / (ra + rs_soil);
+
+                qt_bot[ij] = qt[ijk] + (qsat_bot[ij] - qt[ijk]) * ra * g;
+
+                ra_out [ij] = ra;
+                // The single resistance that would give the same conductance.
+                rs_out [ij] = TF(1) / std::max(TF(Constants::dsmall), g) - ra;
+                f1_out [ij] = f1;
+                f3_out [ij] = f3;
+                vpd_out[ij] = vpd;
+            }
+    }
+
     template<typename TF>
     TF absolute_distance(
             const TF x1, const TF y1, const TF z1,
@@ -1175,6 +1299,8 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         strain_most_min = inputin.get_item<TF>(
                 "IB", "strain_most_min", "", TF(0.05));
         strain_most_reported = false;
+        dn_probe_done = false;
+        dnmax_ib = inputin.get_item<TF>("diff", "dnmax", "", TF(0.4));
         strain_most_built = false;
 
         if (sw_strain_most)
@@ -1470,10 +1596,89 @@ void Immersed_boundary<TF>::update_time_dependent(Timeloop<TF>& timeloop)
 
 #ifndef USECUDA
 template<typename TF>
-void Immersed_boundary<TF>::exec_scalar_flux(Thermo<TF>& thermo, Stats<TF>& stats)
+void Immersed_boundary<TF>::exec_vegetation(
+        Thermo<TF>& thermo, Radiation<TF>& radiation)
+{
+    if (!sw_vegetation)
+        return;
+    if (sw_wall_model == IB_wall_type::Disabled || wall.n == 0)
+        return;
+
+    auto& gd = grid.get_grid_data();
+
+    auto it_qt = sbot_2d.find("qt");
+    if (it_qt == sbot_2d.end())
+        throw std::runtime_error(
+                "[IB] sw_vegetation needs qt in [IB] sbot_spatial: the "
+                "saturated surface humidity q_sat(Ts) is its starting point");
+
+    // Downward shortwave at the surface. With [radiation] swradiation=
+    // prescribed this is the RACMO series; with rrtmgp it is the computed
+    // field. Nothing here needs to know which.
+    std::vector<TF>& sw_dn = radiation.get_surface_radiation("sw_down");
+
+    const std::vector<TF>& pref   = thermo.get_basestate_vector("p");
+    const std::vector<TF>& exnref = thermo.get_basestate_vector("exner");
+
+    ib_vegetation_kernel<TF>(
+            veg_qt_bot.data(),
+            veg_ra.data(), veg_rs.data(),
+            veg_f1.data(), veg_f3.data(), veg_vpd.data(),
+            fields.sp.at("thl")->fld.data(),
+            fields.sp.at("qt")->fld.data(),
+            it_qt->second.data(),
+            sw_dn.data(),
+            veg_c_veg.data(), veg_lai.data(),
+            veg_rs_veg_min.data(), veg_rs_soil_min.data(),
+            veg_gD.data(),
+            veg_f2.data(), veg_f2b.data(),
+            pref.data(), exnref.data(),
+            wall_floor_ij, wall.k, wall.dn, wall.z0h,
+            wall.ustar, wall.obuk,
+            gd.istart, gd.iend, gd.jstart, gd.jend,
+            gd.icells, gd.ijcells);
+
+    boundary_cyclic.exec_2d(veg_qt_bot.data());
+
+    if (!veg_reported)
+    {
+        veg_reported = true;
+        TF rs_min = TF(1e30), rs_max = TF(-1e30), ra_mean = TF(0);
+        int n = 0;
+        for (int j=gd.jstart; j<gd.jend; ++j)
+            for (int i=gd.istart; i<gd.iend; ++i)
+            {
+                const int ij = i + j*gd.icells;
+                if (veg_ra[ij] <= TF(0))
+                    continue;
+                rs_min = std::min(rs_min, veg_rs[ij]);
+                rs_max = std::max(rs_max, veg_rs[ij]);
+                ra_mean += veg_ra[ij];
+                ++n;
+            }
+        master.min(&rs_min, 1);
+        master.max(&rs_max, 1);
+        master.sum(&ra_mean, 1);
+        master.sum(&n, 1);
+        master.print_message(
+                "IB: canopy resistance %.4g .. %.4g s/m over %d column(s), "
+                "mean ra %.4g s/m\n",
+                double(rs_min), double(rs_max), n,
+                double(n > 0 ? ra_mean/TF(n) : TF(0)));
+    }
+}
+
+template<typename TF>
+void Immersed_boundary<TF>::exec_scalar_flux(
+        Thermo<TF>& thermo, Radiation<TF>& radiation, Stats<TF>& stats)
 {
     if (sw_ib == IB_type::Disabled || !sw_scalar_flux)
         return;
+
+    // The canopy turns q_sat(Ts) into the resistance-limited surface value
+    // the wall faces below will use. Must come after exec_wall_model, which
+    // it does: model.cxx calls that first.
+    exec_vegetation(thermo, radiation);
     if (sw_wall_model == IB_wall_type::Disabled || wall.n == 0)
         return;
     if (fields.sp.size() == 0)
@@ -1507,10 +1712,16 @@ void Immersed_boundary<TF>::exec_scalar_flux(Thermo<TF>& thermo, Stats<TF>& stat
 
         std::vector<TF>& pw = wall_value_face.at(name);
         auto it2d = sbot_2d.find(name);
+        // The canopy replaces the saturated qt surface value; every other
+        // scalar, and qt itself when sw_vegetation is off, is unchanged.
+        const bool use_veg = (sw_vegetation && name == "qt"
+                              && veg_qt_bot.size() == size_t(gd.ijcells));
         for (int m=0; m<wall.n; ++m)
-            pw[m] = (it2d != sbot_2d.end())
-                  ? it2d->second[wall.i[m] + wall.j[m]*gd.icells]
-                  : sbc.at(name);
+            pw[m] = use_veg
+                  ? veg_qt_bot[wall.i[m] + wall.j[m]*gd.icells]
+                  : ((it2d != sbot_2d.end())
+                     ? it2d->second[wall.i[m] + wall.j[m]*gd.icells]
+                     : sbc.at(name));
 
         wall_scalar_flux_kernel<TF>(
                 fields.st.at(name)->fld.data(),
@@ -1833,6 +2044,150 @@ void Immersed_boundary<TF>::exec_strain_most()
     // The diffusion operator reads evisc from the neighbouring ranks too.
     boundary_cyclic.exec(evisc);
 
+    // ---- where does the diffusion number actually come from? -------------
+    // One-shot probe. calc_dnmul (include/diff_kernels.h) scans EVERY cell
+    // between kstart and kend - it has no idea the immersed boundary exists -
+    // so the timestep can be set by a cell inside the terrain, or by a fluid
+    // cell that no wall correction ever visits. Both look exactly like "the
+    // wall patches did not work". See apply_ib_dnum_probe.py.
+    // n_cells > 0 matters: exec_strain_most runs BEFORE the first
+    // exec_wall_model, so at the very first substep wall.ustar is still zero,
+    // every face is skipped, and evisc is the UNCORRECTED field. Probing then
+    // would measure the state the patches were meant to change. Waiting for
+    // the first call that actually corrected something gets the right
+    // snapshot - and it is the same call that prints the rescaling report.
+    if (!dn_probe_done && n_cells > 0)
+    {
+        dn_probe_done = true;
+
+        const TF fac_xy = TF(1)/(gd.dx*gd.dx) + TF(1)/(gd.dy*gd.dy);
+        const TF tPrfac = TF(1)/std::min(TF(1.), tPr_ib);
+
+        // 0 = every cell (what calc_dnmul uses), 1 = fluid only,
+        // 2 = fluid at least one level clear of the terrain, 3 = solid only.
+        TF best[4] = {TF(0), TF(0), TF(0), TF(0)};
+        TF zbest[4] = {TF(0), TF(0), TF(0), TF(0)};
+
+        for (int k=gd.kstart; k<gd.kend; ++k)
+            for (int j=gd.jstart; j<gd.jend; ++j)
+                for (int i=gd.istart; i<gd.iend; ++i)
+                {
+                    const int ij  = i + j*gd.icells;
+                    const int ijk = ij + k*gd.ijcells;
+                    const TF m = std::abs(evisc[ijk]) * tPrfac
+                               * (fac_xy + TF(1)/(gd.dz[k]*gd.dz[k]));
+
+                    const bool solid = (gd.z[k] <= dem[ij]);
+                    const bool clear = (gd.z[k] > dem[ij] + gd.dz[k]);
+
+                    if (m > best[0]) { best[0] = m; zbest[0] = gd.z[k]; }
+                    const int q = solid ? 3 : 1;
+                    if (m > best[q]) { best[q] = m; zbest[q] = gd.z[k]; }
+                    if (!solid && clear && m > best[2])
+                                   { best[2] = m; zbest[2] = gd.z[k]; }
+                }
+
+        for (int q=0; q<4; ++q)
+        {
+            master.max(&best[q], 1);
+            master.max(&zbest[q], 1);
+        }
+
+        static const char* label[4] = {
+            "every cell (what calc_dnmul uses)",
+            "fluid cells only                 ",
+            "fluid, >1 level clear of terrain ",
+            "cells INSIDE the terrain         "};
+
+        master.print_message(
+                "IB: dn probe - which population sets the diffusion limit "
+                "(dnmax=%.3f):\n", double(dnmax_ib));
+        for (int q=0; q<4; ++q)
+        {
+            if (!(best[q] > TF(0)))
+                continue;
+            const TF ev = best[q] / (tPrfac * (fac_xy
+                        + TF(1)/(gd.dz[gd.kstart]*gd.dz[gd.kstart])));
+            master.print_message(
+                    "IB: dn probe   %s  evisc ~ %8.2f m2/s -> dt <= %8.4f s\n",
+                    label[q], double(ev), double(dnmax_ib/best[q]));
+        }
+        master.print_message(
+                "IB: dn probe   if the dt for 'every cell' is much smaller "
+                "than the one for 'fluid cells only', the timestep is being "
+                "set inside the terrain - which blank_solid holds inert "
+                "anyway, so it is costing nothing but speed.\n");
+    }
+
+    // ---- where does the diffusion number actually come from? -------------
+    // One-shot probe. calc_dnmul (include/diff_kernels.h) scans EVERY cell
+    // between kstart and kend - it has no idea the immersed boundary exists -
+    // so the timestep can be set by a cell inside the terrain, or by a fluid
+    // cell that no wall correction ever visits. Both look exactly like "the
+    // wall patches did not work". See apply_ib_dnum_probe.py.
+    if (!dn_probe_done)
+    {
+        dn_probe_done = true;
+
+        const TF fac_xy = TF(1)/(gd.dx*gd.dx) + TF(1)/(gd.dy*gd.dy);
+        const TF tPrfac = TF(1)/std::min(TF(1.), tPr_ib);
+
+        // 0 = every cell (what calc_dnmul uses), 1 = fluid only,
+        // 2 = fluid at least one level clear of the terrain, 3 = solid only.
+        TF best[4] = {TF(0), TF(0), TF(0), TF(0)};
+        TF zbest[4] = {TF(0), TF(0), TF(0), TF(0)};
+
+        for (int k=gd.kstart; k<gd.kend; ++k)
+            for (int j=gd.jstart; j<gd.jend; ++j)
+                for (int i=gd.istart; i<gd.iend; ++i)
+                {
+                    const int ij  = i + j*gd.icells;
+                    const int ijk = ij + k*gd.ijcells;
+                    const TF m = std::abs(evisc[ijk]) * tPrfac
+                               * (fac_xy + TF(1)/(gd.dz[k]*gd.dz[k]));
+
+                    const bool solid = (gd.z[k] <= dem[ij]);
+                    const bool clear = (gd.z[k] > dem[ij] + gd.dz[k]);
+
+                    if (m > best[0]) { best[0] = m; zbest[0] = gd.z[k]; }
+                    const int q = solid ? 3 : 1;
+                    if (m > best[q]) { best[q] = m; zbest[q] = gd.z[k]; }
+                    if (!solid && clear && m > best[2])
+                                   { best[2] = m; zbest[2] = gd.z[k]; }
+                }
+
+        for (int q=0; q<4; ++q)
+        {
+            master.max(&best[q], 1);
+            master.max(&zbest[q], 1);
+        }
+
+        static const char* label[4] = {
+            "every cell (what calc_dnmul uses)",
+            "fluid cells only                 ",
+            "fluid, >1 level clear of terrain ",
+            "cells INSIDE the terrain         "};
+
+        master.print_message(
+                "IB: dn probe - which population sets the diffusion limit "
+                "(dnmax=%.3f):\n", double(dnmax_ib));
+        for (int q=0; q<4; ++q)
+        {
+            if (!(best[q] > TF(0)))
+                continue;
+            const TF ev = best[q] / (tPrfac * (fac_xy
+                        + TF(1)/(gd.dz[gd.kstart]*gd.dz[gd.kstart])));
+            master.print_message(
+                    "IB: dn probe   %s  evisc ~ %8.2f m2/s -> dt <= %8.4f s\n",
+                    label[q], double(ev), double(dnmax_ib/best[q]));
+        }
+        master.print_message(
+                "IB: dn probe   if the dt for 'every cell' is much smaller "
+                "than the one for 'fluid cells only', the timestep is being "
+                "set inside the terrain - which blank_solid holds inert "
+                "anyway, so it is costing nothing but speed.\n");
+    }
+
     if (!strain_most_reported && n_cells > 0)
     {
         strain_most_reported = true;
@@ -1963,6 +2318,36 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
         }
     }
 
+    // [IB] sw_vegetation - apply_ib_vegetation.py. Off by default, and with
+    // rs_veg_min = rs_soil_min = 0 it is bit-identical to off.
+    sw_vegetation = inputin.get_item<bool>("IB", "sw_vegetation", "", false);
+    veg_reported  = false;
+    veg_soil_ktot = 0;
+
+    if (sw_vegetation)
+    {
+        veg_soil_ktot = inputin.get_item<int>("IB", "veg_soil_ktot", "", 4);
+        if (veg_soil_ktot < 1)
+            throw std::runtime_error(
+                    "[IB] veg_soil_ktot must be at least 1");
+        if (fields.sp.find("qt") == fields.sp.end())
+            throw std::runtime_error(
+                    "[IB] sw_vegetation needs a qt scalar");
+        veg_c_veg      .assign(gd.ijcells, TF(0));
+        veg_lai        .assign(gd.ijcells, TF(0));
+        veg_rs_veg_min .assign(gd.ijcells, TF(0));
+        veg_rs_soil_min.assign(gd.ijcells, TF(0));
+        veg_gD         .assign(gd.ijcells, TF(0));
+        veg_ra         .assign(gd.ijcells, TF(0));
+        veg_rs         .assign(gd.ijcells, TF(0));
+        veg_f1         .assign(gd.ijcells, TF(0));
+        veg_f3         .assign(gd.ijcells, TF(0));
+        veg_vpd        .assign(gd.ijcells, TF(0));
+        veg_qt_bot     .assign(gd.ijcells, TF(0));
+        veg_f2         .assign(gd.ijcells, TF(1));
+        veg_f2b        .assign(gd.ijcells, TF(1));
+    }
+
     sw_blank_solid = inputin.get_item<bool>("IB", "sw_blank_solid", "", false);
 
     // [IB] sw_advec_wall - apply_ib_advec_wall.py
@@ -2077,7 +2462,9 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                 "ustar_ib_floor", "ustar_ib_wall",
                 "obuk_ib_floor", "obuk_ib_wall",
                 "ch_ib_floor", "ch_ib_wall",
-                "nface", "nface_floor", "nface_wall", "area_wall"};
+                "nface", "nface_floor", "nface_wall", "area_wall",
+                // apply_ib_vegetation.py
+                "ra_ib", "rs_ib", "f1_ib", "f3_ib", "vpd_ib", "qt_veg_ib"};
             bool hit = false;
             for (const char* nm : diag_names)
                 if (*it == nm) { hit = true; break; }
@@ -2132,7 +2519,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
 }
 
 template <typename TF>
-void Immersed_boundary<TF>::create()
+void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
 {
     if (sw_ib == IB_type::Disabled)
         return;
@@ -2330,6 +2717,211 @@ void Immersed_boundary<TF>::create()
             // Kept as a member: the momentum wall faces (sw_momentum_flux)
             // need it to find the u* of the column they sit in.
             wall_floor_ij = wall_floor;
+
+            // ---- [IB] sw_vegetation - apply_ib_vegetation.py --------------
+            if (sw_vegetation)
+            {
+                /*
+                 * The five per-column canopy parameters, as 2-D binaries in
+                 * the same format as <scalar>_sbot.0000000. Ice columns are
+                 * written with c_veg = 0 and rs_soil_min = 0, which makes
+                 * this patch a no-op there.
+                 */
+                auto load_veg_2d = [&](std::vector<TF>& dst,
+                                       const std::string& nm)
+                {
+                    auto tmp = fields.get_tmp();
+                    const std::string f = nm + ".0000000";
+                    master.print_message("Loading \"%s\" ... ", f.c_str());
+                    if (field3d_io.load_xy_slice(
+                                tmp->fld_bot.data(), tmp->fld.data(),
+                                f.c_str()))
+                    {
+                        master.print_message("FAILED\n");
+                        throw std::runtime_error(
+                                "[IB] sw_vegetation: reading " + f
+                                + " failed");
+                    }
+                    master.print_message("OK\n");
+                    std::copy(tmp->fld_bot.begin(),
+                              tmp->fld_bot.begin() + gd.ijcells,
+                              dst.begin());
+                    fields.release_tmp(tmp);
+                    boundary_cyclic.exec_2d(dst.data());
+                };
+
+                // The same, but into a slice of a stacked (level, ij)
+                // array - the soil state, one binary per level.
+                auto load_veg_2d_at = [&](std::vector<TF>& dst,
+                                          const int offset,
+                                          const std::string& nm)
+                {
+                    auto tmp = fields.get_tmp();
+                    const std::string f = nm + ".0000000";
+                    master.print_message("Loading \"%s\" ... ", f.c_str());
+                    if (field3d_io.load_xy_slice(
+                                tmp->fld_bot.data(), tmp->fld.data(),
+                                f.c_str()))
+                    {
+                        master.print_message("FAILED\n");
+                        throw std::runtime_error(
+                                "[IB] sw_vegetation: reading " + f
+                                + " failed");
+                    }
+                    master.print_message("OK\n");
+                    std::copy(tmp->fld_bot.begin(),
+                              tmp->fld_bot.begin() + gd.ijcells,
+                              dst.begin() + offset);
+                    fields.release_tmp(tmp);
+                    boundary_cyclic.exec_2d(dst.data() + offset);
+                };
+
+                load_veg_2d(veg_c_veg,       "c_veg");
+                load_veg_2d(veg_lai,         "lai");
+                load_veg_2d(veg_rs_veg_min,  "rs_veg_min");
+                load_veg_2d(veg_rs_soil_min, "rs_soil_min");
+                load_veg_2d(veg_gD,          "gD");
+
+                /*
+                 * The soil, PER COLUMN. root_frac and index_soil stay
+                 * 1-D - they are properties of the vegetation type and the
+                 * texture, not of the weather - but the STATE is 2-D per
+                 * level, read from theta_soil_<k>/t_soil_<k>.0000000 with k
+                 * counting from the BOTTOM, the order soil_grid.cxx uses.
+                 *
+                 * Static here: this is RACMO's soil at t=0, held for the
+                 * whole run. Patch 18 integrates it.
+                 */
+                Netcdf_group& soil_group = input_nc.get_group("soil");
+                const int sk = veg_soil_ktot;
+
+                veg_root_frac .resize(sk);
+                veg_soil_index.resize(sk);
+                soil_group.get_variable<TF> (veg_root_frac,  "root_frac",  {0}, {sk});
+                soil_group.get_variable<int>(veg_soil_index, "index_soil", {0}, {sk});
+
+                veg_t_soil    .assign(size_t(sk)*gd.ijcells, TF(0));
+                veg_theta_soil.assign(size_t(sk)*gd.ijcells, TF(0));
+                for (int k=0; k<sk; ++k)
+                {
+                    load_veg_2d_at(veg_theta_soil, k*gd.ijcells,
+                                   "theta_soil_" + std::to_string(k));
+                    load_veg_2d_at(veg_t_soil, k*gd.ijcells,
+                                   "t_soil_" + std::to_string(k));
+                }
+
+                /*
+                 * The van Genuchten table, from the same file and with the
+                 * same variable names the LSM uses, so one table serves both.
+                 * Only theta_res/wp/fc/sat are needed here; patch 18 reads
+                 * gamma_sat, alpha, l and n from it as well.
+                 */
+                Netcdf_file nc_lut(
+                        master, "van_genuchten_parameters.nc",
+                        Netcdf_mode::Read);
+                const int n_class = nc_lut.get_dimension_size("index");
+
+                std::vector<TF> theta_res(n_class), theta_wp(n_class),
+                                theta_fc(n_class),  theta_sat(n_class);
+                nc_lut.get_variable<TF>(theta_res, "theta_res", {0}, {n_class});
+                nc_lut.get_variable<TF>(theta_wp,  "theta_wp",  {0}, {n_class});
+                nc_lut.get_variable<TF>(theta_fc,  "theta_fc",  {0}, {n_class});
+                nc_lut.get_variable<TF>(theta_sat, "theta_sat", {0}, {n_class});
+
+                for (int k=0; k<sk; ++k)
+                    if (veg_soil_index[k] < 0 || veg_soil_index[k] >= n_class)
+                        throw std::runtime_error(
+                                "[IB] sw_vegetation: index_soil out of range "
+                                "of van_genuchten_parameters.nc");
+
+                /*
+                 * f2 and f2b, PER COLUMN.
+                 *
+                 * f2  - root-weighted mean soil moisture normalised between
+                 *       wilting point and field capacity, i.e.
+                 *       sk::calc_root_weighted_mean_theta followed by
+                 *       lsmk::calc_resistance_functions.
+                 * f2b - the same for the bare-soil tile, from the TOP layer
+                 *       only, with theta_min mixed between wilting point and
+                 *       residual by THIS column's c_veg.
+                 *
+                 * Both were domain constants while the soil was one profile.
+                 * They are the whole reason for reading RACMO's soil: a
+                 * column by the margin and a column on a dry ridge do not
+                 * have the same stomatal closure, and a single f2 cannot say
+                 * so.
+                 */
+                const int si_top = veg_soil_index[sk-1];
+                TF f2_lo = TF(1e30), f2_hi = TF(-1e30);
+                TF f2b_lo = TF(1e30), f2b_hi = TF(-1e30);
+                TF th_lo = TF(1e30), th_hi = TF(-1e30);
+                int n_col = 0;
+
+                for (int j=gd.jstart; j<gd.jend; ++j)
+                    for (int i=gd.istart; i<gd.iend; ++i)
+                    {
+                        const int ij = i + j*gd.icells;
+
+                        TF theta_mean_n = TF(0);
+                        for (int k=0; k<sk; ++k)
+                        {
+                            const int si = veg_soil_index[k];
+                            const TF th = veg_theta_soil[k*gd.ijcells + ij];
+                            const TF tl = std::max(th, theta_wp[si]);
+                            theta_mean_n += veg_root_frac[k]
+                                    * (tl - theta_wp[si])
+                                    / (theta_fc[si] - theta_wp[si]);
+                        }
+                        veg_f2[ij] = TF(1) / std::min(TF(1),
+                                std::max(TF(1e-9), theta_mean_n));
+
+                        const TF cv = veg_c_veg[ij];
+                        const TF th_top =
+                                veg_theta_soil[(sk-1)*gd.ijcells + ij];
+                        const TF theta_min = cv * theta_wp [si_top]
+                                  + (TF(1)-cv) * theta_res[si_top];
+                        const TF theta_rel = (th_top - theta_min)
+                                           / (theta_fc[si_top] - theta_min);
+                        veg_f2b[ij] = TF(1) / std::min(TF(1),
+                                std::max(TF(1e-9), theta_rel));
+
+                        if (veg_c_veg[ij] > TF(0)
+                                || veg_rs_soil_min[ij] > TF(0))
+                        {
+                            f2_lo  = std::min(f2_lo,  veg_f2[ij]);
+                            f2_hi  = std::max(f2_hi,  veg_f2[ij]);
+                            f2b_lo = std::min(f2b_lo, veg_f2b[ij]);
+                            f2b_hi = std::max(f2b_hi, veg_f2b[ij]);
+                            th_lo  = std::min(th_lo,  th_top);
+                            th_hi  = std::max(th_hi,  th_top);
+                            ++n_col;
+                        }
+                    }
+                boundary_cyclic.exec_2d(veg_f2.data());
+                boundary_cyclic.exec_2d(veg_f2b.data());
+
+                master.min(&f2_lo, 1);  master.max(&f2_hi, 1);
+                master.min(&f2b_lo, 1); master.max(&f2b_hi, 1);
+                master.min(&th_lo, 1);  master.max(&th_hi, 1);
+                master.sum(&n_col, 1);
+                if (n_col == 0)
+                {
+                    f2_lo = f2_hi = f2b_lo = f2b_hi = TF(0);
+                    th_lo = th_hi = TF(0);
+                }
+
+                master.print_message(
+                        "IB: vegetation on. soil ktot %d, texture index %d "
+                        "(theta_wp %.3f, theta_fc %.3f, theta_sat %.3f)\n",
+                        sk, si_top, double(theta_wp[si_top]),
+                        double(theta_fc[si_top]), double(theta_sat[si_top]));
+                master.print_message(
+                        "IB: over %d active column(s): theta_top %.3f .. "
+                        "%.3f m3/m3, f2 %.2f .. %.2f, f2b %.2f .. %.2f\n",
+                        n_col, double(th_lo), double(th_hi),
+                        double(f2_lo), double(f2_hi),
+                        double(f2b_lo), double(f2b_hi));
+            }
             hfss_ij.assign(gd.ijcells, TF(0));
             hfls_ij.assign(gd.ijcells, TF(0));
 
@@ -2770,6 +3362,25 @@ bool Immersed_boundary<TF>::calc_surface_diag(
         return true;
     }
 
+    // ---- the IB canopy: already one value per column -----------------------
+    // apply_ib_vegetation.py. No face selector applies - these live on the
+    // column, not on a face - so _floor and _wall are accepted and ignored.
+    {
+        const std::vector<TF>* src = nullptr;
+        if      (name == "ra_ib")     src = &veg_ra;
+        else if (name == "rs_ib")     src = &veg_rs;
+        else if (name == "f1_ib")     src = &veg_f1;
+        else if (name == "f3_ib")     src = &veg_f3;
+        else if (name == "vpd_ib")    src = &veg_vpd;
+        else if (name == "qt_veg_ib") src = &veg_qt_bot;
+        if (src != nullptr)
+        {
+            if (src->size() == size_t(gd.ijcells))
+                std::copy(src->begin(), src->end(), out);
+            return true;
+        }
+    }
+
     // ---- fluxes summed over the selected faces -----------------------------
     {
         const std::string tag = "_fluxbot_ib";
@@ -3010,6 +3621,14 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
         {"nface_floor",    "-",        "floor faces of the column"},
         {"nface_wall",     "-",        "riser faces of the column"},
         {"area_wall",      "-",        "riser area per unit ground area"},
+        // apply_ib_vegetation.py. Per column, not per face, so the _floor
+        // and _wall split below does not apply to them.
+        {"ra_ib",          "s m-1",    "IB aerodynamic resistance, 1/(u* f_h)"},
+        {"rs_ib",          "s m-1",    "IB surface resistance, the single value equivalent to the tiles"},
+        {"f1_ib",          "-",        "canopy resistance factor from shortwave"},
+        {"f3_ib",          "-",        "canopy resistance factor from vapour pressure deficit"},
+        {"vpd_ib",         "Pa",       "vapour pressure deficit at the first fluid cell"},
+        {"qt_veg_ib",      "kg kg-1",  "IB surface qt after the canopy resistance"},
     };
 
     // The per-face split. Anything that is carried BY a wall face can be
