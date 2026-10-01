@@ -57,6 +57,8 @@ struct Wall_cells
     std::vector<TF> da;      // cell extent along the normal
     std::vector<TF> z0m;
     std::vector<TF> z0h;
+    std::vector<TF> z0q;     // moisture roughness; = z0h unless andreas1987
+                             // (apply_ib_z0_map.py)
 
     std::vector<TF> obuk;    // kept between substeps as the iteration's guess
     std::vector<TF> ustar;
@@ -188,6 +190,9 @@ class Immersed_boundary
         // Column output: the surface diagnostics as time series at the
         // [column] locations, and the IB mask of that column as a profile.
         void create_column(Column<TF>&);
+        // apply_ib_column_guard.py: set by create_column, checked every
+        // substep, so a tree missing the model.cxx call cannot run silently.
+        bool column_created = false;
         void exec_column(Column<TF>&, Thermo<TF>&);
 
 
@@ -221,6 +226,20 @@ class Immersed_boundary
         IB_wall_type sw_wall_model;
         TF z0m_ib;
         TF z0h_ib;
+
+        // apply_ib_z0_map.py - a z0m map and a model for z0h/z0q.
+        bool sw_z0m_map = false;
+        std::vector<TF> z0m_map;          // per column, z0m.0000000     [m]
+        std::vector<TF> z0_ice_map;       // per column, ib_ice.0000000  [-]
+        std::vector<char> wall_is_ice;    // per wall face
+        int z0h_model_ice  = 0;           // see scalar_roughness()
+        int z0h_model_land = 0;
+        TF z0h_ratio    = TF(10);
+        TF z0_nu        = TF(1.5e-5);
+        TF z0_yang_beta = TF(7.2);
+        TF z0h_min      = TF(1e-10);
+        TF z0h_max      = TF(0.1);
+        bool z0_reported = false;
         TF tPr_wm;                  // [diff] tPr, for the scalar diffusivity
         Wall_cells<TF> wall;
         bool sw_momentum_flux;
@@ -236,6 +255,11 @@ class Immersed_boundary
         // One-shot diffusion-number probe. See apply_ib_dnum_probe.py.
         bool dn_probe_done;
         TF dnmax_ib;
+
+        // apply_ib_evisc_solid.py
+        bool sw_evisc_solid_zero = false;
+        int  dn_probe_every = 0;
+        long dn_probe_calls = 0;
 
         // Wall damping of the Smagorinsky length at the IB. See
         // apply_ib_wall_mlen.py.
@@ -335,6 +359,11 @@ class Immersed_boundary
         std::vector<TF> veg_f3;           // VPD stress                  [-]
         std::vector<TF> veg_vpd;          // vapour pressure deficit    [Pa]
         std::vector<TF> veg_qt_bot;       // the surface value actually used
+        // apply_ib_lsm_output.py: the two tiles separately, and the share of
+        // the moisture exchange that goes through the canopy.
+        std::vector<TF> veg_rs_veg;       // rs_veg_min/LAI f1 f2 f3   [s m-1]
+        std::vector<TF> veg_rs_soil;      // rs_soil_min f2b           [s m-1]
+        std::vector<TF> veg_ftr;          // transpiration share           [-]
 
         // The soil, PER COLUMN: (ktot, ijcells), bottom-up, so index
         // (sk-1)*ijcells + ij is the top layer - the same order the MicroHH

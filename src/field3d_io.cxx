@@ -321,6 +321,12 @@ int Field3d_io<TF>::save_xz_slice(
 
         MPI_Gatherv(tmp, 1, send_type, recv.data(), counts.data(), offset.data(), recv_type_r, mpi_rank_recv, md.commx);
 
+        // Free the datatypes: without this every slice leaks three of
+        // them, on every rank, for the whole run (apply_cross_type_free.py).
+        MPI_Type_free(&send_type);
+        MPI_Type_free(&recv_type);
+        MPI_Type_free(&recv_type_r);
+
         // Only MPI rank 0 writes the data.
         if (md.mpicoordx == mpi_rank_recv)
         {
@@ -459,6 +465,12 @@ int Field3d_io<TF>::save_yz_slice(
 
         MPI_Gatherv(tmp, 1, send_type, recv.data(), counts.data(), offset.data(), recv_type_r, mpi_rank_recv, md.commy);
 
+        // Free the datatypes: without this every slice leaks three of
+        // them, on every rank, for the whole run (apply_cross_type_free.py).
+        MPI_Type_free(&send_type);
+        MPI_Type_free(&recv_type);
+        MPI_Type_free(&recv_type_r);
+
         // Only MPI rank 0 writes the data.
         if (md.mpicoordy == mpi_rank_recv)
         {
@@ -590,6 +602,12 @@ int Field3d_io<TF>::save_xy_slice(
     // Gather the data!
     std::vector<TF> recv = std::vector<TF>(gd.itot*gd.jtot);
     MPI_Gatherv(tmp, 1, send_type, recv.data(), counts.data(), offset.data(), recv_type_r, 0, md.commxy);
+
+    // Free the datatypes: without this every slice leaks three of
+    // them, on every rank, for the whole run (apply_cross_type_free.py).
+    MPI_Type_free(&send_type);
+    MPI_Type_free(&recv_type);
+    MPI_Type_free(&recv_type_r);
 
     // Only MPI rank 0 writes the data.
     if (md.mpiid == 0)

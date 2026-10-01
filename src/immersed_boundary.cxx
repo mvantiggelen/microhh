@@ -73,6 +73,9 @@ namespace
             TF* const restrict f1_out,
             TF* const restrict f3_out,
             TF* const restrict vpd_out,
+            TF* const restrict rsveg_out,
+            TF* const restrict rssoil_out,
+            TF* const restrict ftr_out,
             const TF* const restrict thl,
             const TF* const restrict qt,
             const TF* const restrict qsat_bot,
@@ -116,6 +119,9 @@ namespace
                 f1_out [ij] = TF(0);
                 f3_out [ij] = TF(0);
                 vpd_out[ij] = TF(0);
+                rsveg_out [ij] = TF(0);
+                rssoil_out[ij] = TF(0);
+                ftr_out   [ij] = TF(0);
 
                 const int m = floor_ij[ij];
                 if (m < 0)
@@ -167,6 +173,14 @@ namespace
                 f1_out [ij] = f1;
                 f3_out [ij] = f3;
                 vpd_out[ij] = vpd;
+
+                // apply_ib_lsm_output.py. The canopy's share of g; zero for
+                // dew, which bypasses the stomata, and on ice, where cv = 0.
+                rsveg_out [ij] = rs_veg;
+                rssoil_out[ij] = rs_soil;
+                ftr_out   [ij] = (qsat_bot[ij] < qt[ijk])
+                        ? TF(0)
+                        : (cv / (ra + rs_veg)) / std::max(TF(Constants::dsmall), g);
             }
     }
 
@@ -466,6 +480,104 @@ namespace
 
     namespace most = Monin_obukhov;
     namespace bsk = Boundary_surface_kernels;
+
+    // ---- apply_ib_z0_map.py: scalar roughness lengths ---------------------
+    enum Z0h_code
+    {
+        Z0h_fixed = 0, Z0h_ratio = 1, Z0h_yang2008 = 2,
+        Z0h_andreas1987 = 3, Z0h_vantiggelen2023 = 4
+    };
+
+    inline int parse_z0h_model(const std::string& s)
+    {
+        if (s == "fixed")           return Z0h_fixed;
+        if (s == "ratio")           return Z0h_ratio;
+        if (s == "yang2008")        return Z0h_yang2008;
+        if (s == "andreas1987")     return Z0h_andreas1987;
+        if (s == "vantiggelen2023") return Z0h_vantiggelen2023;
+        throw std::runtime_error(
+                "[IB] z0h_model \"" + s + "\" is not one of fixed, ratio, "
+                "yang2008, andreas1987, vantiggelen2023");
+    }
+
+    inline const char* z0h_model_name(const int c)
+    {
+        switch (c)
+        {
+            case Z0h_fixed:           return "fixed";
+            case Z0h_ratio:           return "ratio";
+            case Z0h_yang2008:        return "yang2008";
+            case Z0h_andreas1987:     return "andreas1987";
+            case Z0h_vantiggelen2023: return "vantiggelen2023";
+        }
+        return "?";
+    }
+
+    /*
+     * z0h and z0q of one face.
+     *
+     *   ratio        z0m / ratio
+     *   yang2008     (70 nu/u*) exp(-beta u*^0.5 |T*|^0.25), T* = -wthl/u*
+     *                Yang et al. (2008), JAMC 47, 276-290, Table 3 (Y07b),
+     *                beta = 7.2 with u* in m s-1 and T* in K. z0q = z0h.
+     *   andreas1987  ln(z0s/z0m) = b0 + b1 x + b2 x^2, x = ln(u* z0m/nu),
+     *                Andreas (1987), BLM 38, 159-184, Table 1:
+     *                               heat                      vapour
+     *                  Re* <= 0.135  1.250                     1.610
+     *                  0.135..2.5    0.149 -0.550              0.351 -0.628
+     *                  2.5..1000     0.317 -0.565 -0.183       0.396 -0.512 -0.180
+     *                Re* is capped at 1000, the top of the fit.
+     *
+     * `fixed` never gets here. The caller handles u* = 0 and the clipping.
+     */
+    template<typename TF>
+    inline void scalar_roughness(
+            const int model, const TF z0m, const TF ustar, const TF wthl,
+            const TF ratio, const TF nu, const TF beta, TF& z0h, TF& z0q)
+    {
+        if (model == Z0h_ratio)
+        {
+            z0h = z0q = z0m / ratio;
+            return;
+        }
+        const TF us = std::max(ustar, TF(1e-4));
+        if (model == Z0h_yang2008)
+        {
+            const TF tstar = std::abs(wthl) / us;
+            z0h = TF(70) * nu / us
+                * std::exp(-beta * std::sqrt(us) * std::pow(tstar, TF(0.25)));
+            z0q = z0h;
+            return;
+        }
+        if (model == Z0h_andreas1987)
+        {
+            TF re = us * z0m / nu;
+            TF h0, h1, h2, q0, q1, q2;
+            if (re <= TF(0.135))
+            {
+                h0 = TF(1.250); h1 = TF(0);      h2 = TF(0);
+                q0 = TF(1.610); q1 = TF(0);      q2 = TF(0);
+            }
+            else if (re < TF(2.5))
+            {
+                h0 = TF(0.149); h1 = TF(-0.550); h2 = TF(0);
+                q0 = TF(0.351); q1 = TF(-0.628); q2 = TF(0);
+            }
+            else
+            {
+                re = std::min(re, TF(1000));
+                h0 = TF(0.317); h1 = TF(-0.565); h2 = TF(-0.183);
+                q0 = TF(0.396); q1 = TF(-0.512); q2 = TF(-0.180);
+            }
+            const TF x = std::log(re);
+            z0h = z0m * std::exp(h0 + h1*x + h2*x*x);
+            z0q = z0m * std::exp(q0 + q1*x + q2*x*x);
+            return;
+        }
+        throw std::runtime_error(
+                std::string("[IB] z0h_model ") + z0h_model_name(model)
+                + " is not implemented");
+    }
 
     /* Is this cell inside the terrain? Same test is_ghost_cell uses. */
     template<typename TF>
@@ -1263,6 +1375,30 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         {
             z0m_ib = inputin.get_item<TF>("IB", "z0m", "");
             z0h_ib = inputin.get_item<TF>("IB", "z0h", "");
+
+            // apply_ib_z0_map.py
+            sw_z0m_map = inputin.get_item<bool>("IB", "sw_z0m_map", "", false);
+            const std::string z0h_m = inputin.get_item<std::string>(
+                    "IB", "z0h_model", "", "fixed");
+            z0h_model_ice  = parse_z0h_model(z0h_m);
+            z0h_model_land = parse_z0h_model(inputin.get_item<std::string>(
+                    "IB", "z0h_model_land", "", z0h_m));
+            z0h_ratio    = inputin.get_item<TF>("IB", "z0h_ratio",    "", TF(10));
+            z0_nu        = inputin.get_item<TF>("IB", "z0_nu",        "", TF(1.5e-5));
+            z0_yang_beta = inputin.get_item<TF>("IB", "z0_yang_beta", "", TF(7.2));
+            z0h_min      = inputin.get_item<TF>("IB", "z0h_min",      "", TF(1e-10));
+            z0h_max      = inputin.get_item<TF>("IB", "z0h_max",      "", TF(0.1));
+            if (!(z0h_ratio > TF(0)) || !(z0_nu > TF(0))
+                    || !(z0h_min > TF(0)) || !(z0h_max > z0h_min))
+                throw std::runtime_error(
+                        "[IB] z0h_ratio, z0_nu and z0h_min must be > 0 and "
+                        "z0h_max > z0h_min");
+            if (z0h_model_ice == Z0h_vantiggelen2023
+                    || z0h_model_land == Z0h_vantiggelen2023)
+                throw std::runtime_error(
+                        "[IB] z0h_model=vantiggelen2023 is reserved but not "
+                        "implemented yet (apply_ib_z0_map.py): its equations "
+                        "still have to be added to scalar_roughness()");
         }
         else
         {
@@ -1301,6 +1437,12 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         strain_most_reported = false;
         dn_probe_done = false;
         dnmax_ib = inputin.get_item<TF>("diff", "dnmax", "", TF(0.4));
+
+        // apply_ib_evisc_solid.py
+        sw_evisc_solid_zero = inputin.get_item<bool>(
+                "IB", "sw_evisc_solid_zero", "", false);
+        dn_probe_every = inputin.get_item<int>(
+                "IB", "dn_probe_every", "", 0);
         strain_most_built = false;
 
         if (sw_strain_most)
@@ -1366,6 +1508,20 @@ Immersed_boundary<TF>::~Immersed_boundary()
 template<typename TF>
 void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats)
 {
+    // apply_ib_column_guard.py. create_column is called from src/model.cxx
+    // (inserted by apply_ib_column_diag.py). If that call is missing, the
+    // column code compiles, [IB] columnlist is read, and nothing is ever
+    // written - with no message at all. Refuse to run instead.
+    if (!columnlist.empty() && !column_created)
+        throw std::runtime_error(
+                "[IB] columnlist has " + std::to_string(columnlist.size())
+                + " name(s) but ib->create_column() was never called, so none "
+                  "of them would be written. src/model.cxx is missing the two "
+                  "lines apply_ib_column_diag.py inserts: 'ib->create_column("
+                  "*column);' after ib->create(...), and 'ib       ->exec_column("
+                  "*column, *thermo);' after boundary->exec_column. Run "
+                  "patches/check_tree.py on this tree.");
+
     // Cache the base-state exner while a Thermo is in reach; T_2m_ib needs it
     // and exec_cross has no Thermo of its own.
     if (exner_ref.empty())
@@ -1413,6 +1569,50 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
 
     // nullptr is safe: the kernel only dereferences b when sw_stability.
     const TF* b_ptr = sw_stability ? buoy->fld.data() : nullptr;
+
+    // apply_ib_z0_map.py: z0h and z0q from the previous call's u* and flux.
+    if (z0h_model_ice >= Z0h_yang2008 || z0h_model_land >= Z0h_yang2008)
+    {
+        const std::vector<TF>* fthl =
+                wall_flux.count("thl") ? &wall_flux.at("thl") : nullptr;
+        TF lo = TF(1e30), hi = TF(-1e30);
+        for (int m=0; m<wall.n; ++m)
+        {
+            const int mod = wall_is_ice[m] ? z0h_model_ice : z0h_model_land;
+            if (mod < Z0h_yang2008)
+                continue;                   // fixed/ratio: set in create()
+            if (!(wall.ustar[m] > TF(0)))
+                continue;                   // first call: keep the guess
+            TF zh, zq;
+            scalar_roughness<TF>(
+                    mod, wall.z0m[m], wall.ustar[m],
+                    fthl ? (*fthl)[m] : TF(0),
+                    z0h_ratio, z0_nu, z0_yang_beta, zh, zq);
+            const TF top = std::min(z0h_max, TF(0.5) * wall.dn[m]);
+            wall.z0h[m] = std::min(std::max(zh, z0h_min), top);
+            wall.z0q[m] = std::min(std::max(zq, z0h_min), top);
+            lo = std::min(lo, wall.z0h[m]);
+            hi = std::max(hi, wall.z0h[m]);
+        }
+        if (!z0_reported && fthl != nullptr)
+        {
+            // Report once there is a real u* AND a real flux behind it.
+            bool any = false;
+            for (int m=0; m<wall.n && !any; ++m)
+                any = ((*fthl)[m] != TF(0));
+            int iany = any ? 1 : 0;
+            master.sum(&iany, 1);
+            if (iany > 0)
+            {
+                z0_reported = true;
+                master.min(&lo, 1);
+                master.max(&hi, 1);
+                master.print_message(
+                        "IB: flow-dependent z0h now %.3e .. %.3e m\n",
+                        double(lo), double(hi));
+            }
+        }
+    }
 
     int n_zl_clamped = 0;
 
@@ -1624,6 +1824,7 @@ void Immersed_boundary<TF>::exec_vegetation(
             veg_qt_bot.data(),
             veg_ra.data(), veg_rs.data(),
             veg_f1.data(), veg_f3.data(), veg_vpd.data(),
+            veg_rs_veg.data(), veg_rs_soil.data(), veg_ftr.data(),
             fields.sp.at("thl")->fld.data(),
             fields.sp.at("qt")->fld.data(),
             it_qt->second.data(),
@@ -1633,7 +1834,7 @@ void Immersed_boundary<TF>::exec_vegetation(
             veg_gD.data(),
             veg_f2.data(), veg_f2b.data(),
             pref.data(), exnref.data(),
-            wall_floor_ij, wall.k, wall.dn, wall.z0h,
+            wall_floor_ij, wall.k, wall.dn, wall.z0q,   // z0q: apply_ib_z0_map.py
             wall.ustar, wall.obuk,
             gd.istart, gd.iend, gd.jstart, gd.jend,
             gd.icells, gd.ijcells);
@@ -1730,7 +1931,8 @@ void Immersed_boundary<TF>::exec_scalar_flux(
                 evisc_ptr,
                 pw,
                 wall.i, wall.j, wall.k, wall.axis, wall.sign,
-                wall.dn, wall.da, wall.z0h,
+                wall.dn, wall.da,
+                (name == "qt" ? wall.z0q : wall.z0h),   // apply_ib_z0_map.py
                 wall.ustar, wall.obuk,
                 gd.dzi.data(), gd.dzhi.data(),
                 fields.rhoref.data(), fields.rhorefh.data(),
@@ -1963,13 +2165,35 @@ void Immersed_boundary<TF>::exec_scalars()
 template<typename TF>
 void Immersed_boundary<TF>::exec_strain_most()
 {
-    if (sw_ib == IB_type::Disabled || !sw_strain_most)
+    if (sw_ib == IB_type::Disabled)
         return;
     if (!fields.sd.count("evisc"))
         return;
 
     auto& gd = grid.get_grid_data();
     TF* const restrict evisc = fields.sd.at("evisc")->fld.data();
+
+    // ---- apply_ib_evisc_solid.py -----------------------------------------
+    // evisc inside the terrain (ghost cells included) is a by-product of the
+    // mirrored ghost velocities, not turbulence. It is removed so that the
+    // diffusion limit on dt is set by the air. See the patch docstring for
+    // why this cannot change a wall flux.
+    if (sw_evisc_solid_zero && dem.size() == size_t(gd.ijcells))
+    {
+        for (int k=gd.kstart; k<gd.kend; ++k)
+            for (int j=gd.jstart; j<gd.jend; ++j)
+                for (int i=gd.istart; i<gd.iend; ++i)
+                {
+                    const int ij = i + j*gd.icells;
+                    if (gd.z[k] <= dem[ij])
+                        evisc[ij + k*gd.ijcells] = TF(0);
+                }
+        if (!sw_strain_most)
+            boundary_cyclic.exec(evisc);
+    }
+
+    if (!sw_strain_most)
+        return;
 
     if (!strain_most_built)
     {
@@ -2056,78 +2280,18 @@ void Immersed_boundary<TF>::exec_strain_most()
     // would measure the state the patches were meant to change. Waiting for
     // the first call that actually corrected something gets the right
     // snapshot - and it is the same call that prints the rescaling report.
-    if (!dn_probe_done && n_cells > 0)
+    // apply_ib_evisc_solid.py: optionally repeat the probe every
+    // dn_probe_every calls, so a long run shows where the limit moves.
+    ++dn_probe_calls;
+    const bool probe_again = (dn_probe_every > 0 && dn_probe_done
+                              && (dn_probe_calls % dn_probe_every) == 0);
+    if ((!dn_probe_done || probe_again) && n_cells > 0)
     {
         dn_probe_done = true;
-
-        const TF fac_xy = TF(1)/(gd.dx*gd.dx) + TF(1)/(gd.dy*gd.dy);
-        const TF tPrfac = TF(1)/std::min(TF(1.), tPr_ib);
-
-        // 0 = every cell (what calc_dnmul uses), 1 = fluid only,
-        // 2 = fluid at least one level clear of the terrain, 3 = solid only.
-        TF best[4] = {TF(0), TF(0), TF(0), TF(0)};
-        TF zbest[4] = {TF(0), TF(0), TF(0), TF(0)};
-
-        for (int k=gd.kstart; k<gd.kend; ++k)
-            for (int j=gd.jstart; j<gd.jend; ++j)
-                for (int i=gd.istart; i<gd.iend; ++i)
-                {
-                    const int ij  = i + j*gd.icells;
-                    const int ijk = ij + k*gd.ijcells;
-                    const TF m = std::abs(evisc[ijk]) * tPrfac
-                               * (fac_xy + TF(1)/(gd.dz[k]*gd.dz[k]));
-
-                    const bool solid = (gd.z[k] <= dem[ij]);
-                    const bool clear = (gd.z[k] > dem[ij] + gd.dz[k]);
-
-                    if (m > best[0]) { best[0] = m; zbest[0] = gd.z[k]; }
-                    const int q = solid ? 3 : 1;
-                    if (m > best[q]) { best[q] = m; zbest[q] = gd.z[k]; }
-                    if (!solid && clear && m > best[2])
-                                   { best[2] = m; zbest[2] = gd.z[k]; }
-                }
-
-        for (int q=0; q<4; ++q)
-        {
-            master.max(&best[q], 1);
-            master.max(&zbest[q], 1);
-        }
-
-        static const char* label[4] = {
-            "every cell (what calc_dnmul uses)",
-            "fluid cells only                 ",
-            "fluid, >1 level clear of terrain ",
-            "cells INSIDE the terrain         "};
-
-        master.print_message(
-                "IB: dn probe - which population sets the diffusion limit "
-                "(dnmax=%.3f):\n", double(dnmax_ib));
-        for (int q=0; q<4; ++q)
-        {
-            if (!(best[q] > TF(0)))
-                continue;
-            const TF ev = best[q] / (tPrfac * (fac_xy
-                        + TF(1)/(gd.dz[gd.kstart]*gd.dz[gd.kstart])));
+        if (probe_again)
             master.print_message(
-                    "IB: dn probe   %s  evisc ~ %8.2f m2/s -> dt <= %8.4f s\n",
-                    label[q], double(ev), double(dnmax_ib/best[q]));
-        }
-        master.print_message(
-                "IB: dn probe   if the dt for 'every cell' is much smaller "
-                "than the one for 'fluid cells only', the timestep is being "
-                "set inside the terrain - which blank_solid holds inert "
-                "anyway, so it is costing nothing but speed.\n");
-    }
-
-    // ---- where does the diffusion number actually come from? -------------
-    // One-shot probe. calc_dnmul (include/diff_kernels.h) scans EVERY cell
-    // between kstart and kend - it has no idea the immersed boundary exists -
-    // so the timestep can be set by a cell inside the terrain, or by a fluid
-    // cell that no wall correction ever visits. Both look exactly like "the
-    // wall patches did not work". See apply_ib_dnum_probe.py.
-    if (!dn_probe_done)
-    {
-        dn_probe_done = true;
+                    "IB: dn probe, call %ld (sw_evisc_solid_zero=%s):\n",
+                    dn_probe_calls, sw_evisc_solid_zero ? "true" : "false");
 
         const TF fac_xy = TF(1)/(gd.dx*gd.dx) + TF(1)/(gd.dy*gd.dy);
         const TF tPrfac = TF(1)/std::min(TF(1.), tPr_ib);
@@ -2344,6 +2508,9 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
         veg_f3         .assign(gd.ijcells, TF(0));
         veg_vpd        .assign(gd.ijcells, TF(0));
         veg_qt_bot     .assign(gd.ijcells, TF(0));
+        veg_rs_veg     .assign(gd.ijcells, TF(0));
+        veg_rs_soil    .assign(gd.ijcells, TF(0));
+        veg_ftr        .assign(gd.ijcells, TF(0));
         veg_f2         .assign(gd.ijcells, TF(1));
         veg_f2b        .assign(gd.ijcells, TF(1));
     }
@@ -2464,7 +2631,14 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                 "ch_ib_floor", "ch_ib_wall",
                 "nface", "nface_floor", "nface_wall", "area_wall",
                 // apply_ib_vegetation.py
-                "ra_ib", "rs_ib", "f1_ib", "f3_ib", "vpd_ib", "qt_veg_ib"};
+                "ra_ib", "rs_ib", "f1_ib", "f3_ib", "vpd_ib", "qt_veg_ib",
+                // apply_ib_lsm_output.py
+                "rs_veg_ib", "rs_soil_ib", "ftr_ib",
+                "c_veg_ib", "lai_ib", "f2_ib", "f2b_ib", "theta_soil_top_ib",
+                // apply_ib_z0_map.py
+                "z0m_ib", "z0h_ib", "z0q_ib",
+                "z0m_ib_floor", "z0h_ib_floor", "z0q_ib_floor",
+                "z0m_ib_wall", "z0h_ib_wall", "z0q_ib_wall"};
             bool hit = false;
             for (const char* nm : diag_names)
                 if (*it == nm) { hit = true; break; }
@@ -2717,6 +2891,122 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
             // Kept as a member: the momentum wall faces (sw_momentum_flux)
             // need it to find the u* of the column they sit in.
             wall_floor_ij = wall_floor;
+
+            // ---- apply_ib_z0_map.py ----------------------------------------
+            {
+                auto& md_z0 = master.get_MPI_data();
+
+                auto load_2d = [&](std::vector<TF>& dst, const std::string& nm)
+                {
+                    dst.assign(gd.ijcells, TF(0));
+                    auto tmp = fields.get_tmp();
+                    const std::string f = nm + ".0000000";
+                    master.print_message("Loading \"%s\" ... ", f.c_str());
+                    if (field3d_io.load_xy_slice(
+                                tmp->fld_bot.data(), tmp->fld.data(), f.c_str()))
+                    {
+                        master.print_message("FAILED\n");
+                        throw std::runtime_error("[IB] reading " + f + " failed");
+                    }
+                    master.print_message("OK\n");
+                    std::copy(tmp->fld_bot.begin(),
+                              tmp->fld_bot.begin() + gd.ijcells, dst.begin());
+                    fields.release_tmp(tmp);
+                    boundary_cyclic.exec_2d(dst.data());
+                };
+
+                // The column the SOLID side of a face belongs to. A floor
+                // face sits on its own column. A riser faces the neighbour -
+                // except across the OUTER domain edge, where the halo is
+                // not terrain (cyclic, or replicated), so it keeps its own.
+                auto face_ij = [&](const int m) -> int
+                {
+                    int i = wall.i[m];
+                    int j = wall.j[m];
+                    if (wall.axis[m] == 0)
+                    {
+                        const int in = i + wall.sign[m];
+                        const bool outer =
+                                (in <  gd.istart && md_z0.mpicoordx == 0)
+                             || (in >= gd.iend   && md_z0.mpicoordx == md_z0.npx-1);
+                        if (!outer) i = in;
+                    }
+                    else if (wall.axis[m] == 1)
+                    {
+                        const int jn = j + wall.sign[m];
+                        const bool outer =
+                                (jn <  gd.jstart && md_z0.mpicoordy == 0)
+                             || (jn >= gd.jend   && md_z0.mpicoordy == md_z0.npy-1);
+                        if (!outer) j = jn;
+                    }
+                    return i + j*gd.icells;
+                };
+
+                if (sw_z0m_map)
+                {
+                    load_2d(z0m_map, "z0m");
+                    int n_bad_z0 = 0;
+                    for (int m=0; m<wall.n; ++m)
+                    {
+                        const TF z = z0m_map[face_ij(m)];
+                        if (!(z > TF(0)) || !(z < TF(0.5) * wall.dn[m]))
+                            ++n_bad_z0;
+                        wall.z0m[m] = z;
+                    }
+                    master.sum(&n_bad_z0, 1);
+                    if (n_bad_z0 > 0)
+                        throw std::runtime_error(
+                                "[IB] z0m.0000000: " + std::to_string(n_bad_z0)
+                                + " wall face(s) got z0m <= 0 or >= dn/2");
+                }
+
+                wall_is_ice.assign(wall.n, char(1));
+                if (z0h_model_ice != z0h_model_land)
+                {
+                    load_2d(z0_ice_map, "ib_ice");
+                    for (int m=0; m<wall.n; ++m)
+                        wall_is_ice[m] = (z0_ice_map[face_ij(m)] > TF(0.5));
+                }
+
+                // The first z0h/z0q: final for fixed and ratio, a first
+                // guess (z0m/z0h_ratio) for the flow-dependent models.
+                wall.z0q.assign(wall.n, TF(0));
+                for (int m=0; m<wall.n; ++m)
+                {
+                    const int mod = wall_is_ice[m] ? z0h_model_ice
+                                                   : z0h_model_land;
+                    if (mod == Z0h_fixed)
+                        wall.z0h[m] = z0h_ib;
+                    else
+                        wall.z0h[m] = wall.z0m[m] / z0h_ratio;
+                    wall.z0q[m] = wall.z0h[m];
+                }
+
+                TF zm_lo = TF(1e30), zm_hi = TF(-1e30);
+                TF zh_lo = TF(1e30), zh_hi = TF(-1e30);
+                int n_ice = 0;
+                for (int m=0; m<wall.n; ++m)
+                {
+                    zm_lo = std::min(zm_lo, wall.z0m[m]);
+                    zm_hi = std::max(zm_hi, wall.z0m[m]);
+                    zh_lo = std::min(zh_lo, wall.z0h[m]);
+                    zh_hi = std::max(zh_hi, wall.z0h[m]);
+                    n_ice += wall_is_ice[m] ? 1 : 0;
+                }
+                int n_all = wall.n;
+                master.min(&zm_lo, 1); master.max(&zm_hi, 1);
+                master.min(&zh_lo, 1); master.max(&zh_hi, 1);
+                master.sum(&n_ice, 1); master.sum(&n_all, 1);
+                master.print_message(
+                        "IB: z0m %s: %.3e .. %.3e m on %d face(s); z0h model "
+                        "'%s' on %d ice face(s), '%s' on the other %d; "
+                        "initial z0h %.3e .. %.3e m\n",
+                        sw_z0m_map ? "from z0m.0000000" : "uniform",
+                        double(zm_lo), double(zm_hi), n_all,
+                        z0h_model_name(z0h_model_ice), n_ice,
+                        z0h_model_name(z0h_model_land), n_all - n_ice,
+                        double(zh_lo), double(zh_hi));
+            }
 
             // ---- [IB] sw_vegetation - apply_ib_vegetation.py --------------
             if (sw_vegetation)
@@ -3336,7 +3626,9 @@ bool Immersed_boundary<TF>::calc_surface_diag(
             for (int i=0; i<gd.icells; ++i)
             {
                 const int ij = i + j*jj;
-                out[ij] = want_z ? dem[ij] : TF(k_dem[ij]);
+                // 0-based INTERIOR level, as documented (apply_ib_kdem_diag.py)
+                out[ij] = want_z ? dem[ij]
+                                 : TF(int(k_dem[ij]) - gd.kstart);
             }
         return true;
     }
@@ -3373,6 +3665,23 @@ bool Immersed_boundary<TF>::calc_surface_diag(
         else if (name == "f3_ib")     src = &veg_f3;
         else if (name == "vpd_ib")    src = &veg_vpd;
         else if (name == "qt_veg_ib") src = &veg_qt_bot;
+        // apply_ib_lsm_output.py
+        else if (name == "rs_veg_ib")  src = &veg_rs_veg;
+        else if (name == "rs_soil_ib") src = &veg_rs_soil;
+        else if (name == "ftr_ib")     src = &veg_ftr;
+        else if (name == "c_veg_ib")   src = &veg_c_veg;
+        else if (name == "lai_ib")     src = &veg_lai;
+        else if (name == "f2_ib")      src = &veg_f2;
+        else if (name == "f2b_ib")     src = &veg_f2b;
+        else if (name == "theta_soil_top_ib")
+        {
+            // Bottom-up storage: the top layer is the last of veg_soil_ktot.
+            const size_t n0 = size_t(std::max(veg_soil_ktot - 1, 0)) * gd.ijcells;
+            if (veg_soil_ktot > 0 && veg_theta_soil.size() >= n0 + gd.ijcells)
+                std::copy(veg_theta_soil.begin() + n0,
+                          veg_theta_soil.begin() + n0 + gd.ijcells, out);
+            return true;
+        }
         if (src != nullptr)
         {
             if (src->size() == size_t(gd.ijcells))
@@ -3436,7 +3745,8 @@ bool Immersed_boundary<TF>::calc_surface_diag(
     // the flux. A column with no face of the requested kind gets NaN rather
     // than 0: an Obukhov length of zero would look like a number.
     if (name == "ustar_ib" || name == "obuk_ib" || name == "ch_ib"
-            || name == "thl_sbot_ib" || name == "qt_sbot_ib")
+            || name == "thl_sbot_ib" || name == "qt_sbot_ib"
+            || name == "z0m_ib" || name == "z0h_ib" || name == "z0q_ib")
     {
         if (sw_wall_model == IB_wall_type::Disabled && name[0] != 't'
                 && name[0] != 'q')
@@ -3456,8 +3766,22 @@ bool Immersed_boundary<TF>::calc_surface_diag(
             const TF a = w_area(m);
 
             TF val;
-            if (name == "ustar_ib")      val = wall.ustar[m];
-            else if (name == "obuk_ib")  val = wall.obuk[m];
+            if (name == "z0m_ib")        val = wall.z0m[m];   // apply_ib_z0_map.py
+            else if (name == "z0h_ib")   val = wall.z0h[m];
+            else if (name == "z0q_ib")   val = wall.z0q.empty()
+                                             ? wall.z0h[m] : wall.z0q[m];
+            else if (name == "ustar_ib") val = wall.ustar[m];
+            else if (name == "obuk_ib")
+                // 1/L, NOT L. The Obukhov length runs to +/-infinity through
+                // neutral, so an area-weighted mean of L over faces that
+                // include a near-neutral riser is dominated by that riser and
+                // comes out as a number with no physical meaning - which is
+                // exactly what obuk_ib showed while obuk_ib_floor looked
+                // sane. 1/L is finite everywhere, zero at neutral, and is the
+                // quantity that actually enters the flux-profile relations;
+                // it is averaged here and inverted at the end.
+                val = (std::abs(wall.obuk[m]) > TF(0))
+                    ? TF(1) / wall.obuk[m] : TF(0);
             else if (name == "ch_ib")    val = wall.ustar[m]
                     * most::fh(wall.dn[m], wall.z0h[m], wall.obuk[m]);
             else if (itv != wall_value_face.end()
@@ -3473,9 +3797,27 @@ bool Immersed_boundary<TF>::calc_surface_diag(
             out[ij] += val * a;
             wsum[ij] += a;
         }
+        const bool is_obuk = (name == "obuk_ib");
         for (int n=0; n<gd.ijcells; ++n)
-            out[n] = (wsum[n] > TF(0)) ? out[n] / wsum[n]
-                                       : std::numeric_limits<TF>::quiet_NaN();
+        {
+            if (!(wsum[n] > TF(0)))
+            {
+                out[n] = std::numeric_limits<TF>::quiet_NaN();
+                continue;
+            }
+            out[n] = out[n] / wsum[n];
+            if (is_obuk)
+            {
+                // back to a length. A mean 1/L of exactly zero is a neutral
+                // column; report the same large value MOST itself clips to
+                // rather than an infinity, with the sign of the flux.
+                const TF inv = out[n];
+                const TF big = TF(Constants::dbig);
+                out[n] = (std::abs(inv) > TF(1)/big)
+                    ? TF(1) / inv
+                    : ((inv < TF(0)) ? -big : big);
+            }
+        }
         (void)is_sbot;
         boundary_cyclic.exec_2d(out);
         return true;
@@ -3554,9 +3896,12 @@ bool Immersed_boundary<TF>::calc_surface_diag(
                 const TF pw = (i2 != sbot_2d.end()) ? i2->second[ij]
                             : (sbc.count(s2) ? sbc.at(s2) : TF(0));
                 const TF p1 = fields.sp.at(s2)->fld[ijk];
-                const TF zd = std::max(diag_z_scalar, wall.z0h[m]*TF(1.001));
-                const TF r  = most::fh(z1, wall.z0h[m], L)
-                            / most::fh(zd, wall.z0h[m], L);
+                // qt with z0q, thl with z0h (apply_ib_z0_map.py)
+                const TF z0s = (s2 == "qt" && wall.z0q.size() == wall.z0h.size())
+                             ? wall.z0q[m] : wall.z0h[m];
+                const TF zd = std::max(diag_z_scalar, z0s*TF(1.001));
+                const TF r  = most::fh(z1, z0s, L)
+                            / most::fh(zd, z0s, L);
                 val = pw + (p1 - pw) * r;
 
                 // T_2m_ib is the DRY temperature: exner(p_k) * thl_2m, with
@@ -3586,6 +3931,25 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
 {
     if (sw_ib == IB_type::Disabled)
         return;
+
+    // Register ONCE. Every name here is defined as a NetCDF variable the
+    // moment it is registered (Column::add_prof / add_time_series call
+    // nc_def_var straight away), so a second call throws
+    //     EXCEPTION: NetCDF: String match to name in use
+    // at the first name, with no indication of which name or why. That is
+    // not hypothetical: the call lives in model.cxx, and a tree that was
+    // patched twice, or by two versions of this script, gets two of them.
+    static bool registered = false;
+    if (registered)
+    {
+        master.print_warning(
+                "IB: create_column called twice; the second call was "
+                "ignored. Check for a duplicate ib->create_column() in "
+                "src/model.cxx.\n");
+        return;
+    }
+    registered = true;
+    column_created = true;              // apply_ib_column_guard.py
 
     // The mask first: a column file that carries a profile without saying
     // which part of it is rock invites exactly the mistake this whole
@@ -3629,6 +3993,19 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
         {"f3_ib",          "-",        "canopy resistance factor from vapour pressure deficit"},
         {"vpd_ib",         "Pa",       "vapour pressure deficit at the first fluid cell"},
         {"qt_veg_ib",      "kg kg-1",  "IB surface qt after the canopy resistance"},
+        // apply_ib_lsm_output.py
+        {"rs_veg_ib",      "s m-1",    "IB canopy resistance rs_veg_min/LAI*f1*f2*f3"},
+        {"rs_soil_ib",     "s m-1",    "IB soil resistance rs_soil_min*f2b"},
+        {"ftr_ib",         "-",        "share of the IB moisture exchange through the canopy"},
+        {"c_veg_ib",       "-",        "IB vegetation cover fraction (static)"},
+        {"lai_ib",         "m2 m-2",   "IB leaf area index (static)"},
+        {"f2_ib",          "-",        "root-zone soil-moisture stress factor (static)"},
+        {"f2b_ib",         "-",        "top-layer soil-moisture stress factor (static)"},
+        {"theta_soil_top_ib", "m3 m-3", "top soil layer water content (static)"},
+        // apply_ib_z0_map.py
+        {"z0m_ib",         "m",        "IB momentum roughness length"},
+        {"z0h_ib",         "m",        "IB heat roughness length"},
+        {"z0q_ib",         "m",        "IB moisture roughness length"},
     };
 
     // The per-face split. Anything that is carried BY a wall face can be
@@ -3637,7 +4014,8 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
     // rest. Registered automatically so the table above stays readable.
     static const char* splittable[] = {
         "thl_fluxbot_ib", "qt_fluxbot_ib", "hfss_ib", "hfls_ib",
-        "ustar_ib", "obuk_ib", "ch_ib", "thl_sbot_ib", "qt_sbot_ib"};
+        "ustar_ib", "obuk_ib", "ch_ib", "thl_sbot_ib", "qt_sbot_ib",
+        "z0m_ib", "z0h_ib", "z0q_ib"};
 
     for (const std::string& s : columnlist)
     {

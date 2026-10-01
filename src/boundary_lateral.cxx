@@ -248,15 +248,21 @@ namespace
 
         const TF w_dt = TF(1) / tau_sponge;
 
+        // South is the staggered side: v[jstart] is the boundary FACE, set
+        // by set_lbc_gcs, so the band starts at n = 2. North is not: v[jend]
+        // is the face, curtain plane r is face jend-nsponge+r, and the band is
+        // jend-1 .. jend-nsponge with n = 1 .. nsponge - exactly what
+        // lateral_sponge_kernel_u does at East. See apply_lbc_sponge_edges.py.
+        const int nstart = (location==Lbc_location::South) ? 2 : 1;
+
         for (int k=kstart; k<kend; ++k)
             for (int i=istart; i<iend; ++i)
-                for (int n=2; n<=nsponge; ++n)
+                for (int n=nstart; n<=nsponge; ++n)
                 {
-                    const int kstride_lbc = jgc + nsponge;
                     const int jlbc = (location==Lbc_location::South) ? jgc+n-1 : nsponge-n;
                     const int ijk_lbc = i + jlbc*icells + k*icells*(jgc_pad+nsponge);
 
-                    const int j = (location==Lbc_location::South) ? jstart+(n-1) : jend-(n-1);
+                    const int j = (location==Lbc_location::South) ? jstart+(n-1) : jend-n;
                     const int ijk = i + j*icells + k*ijcells;
 
                     const TF v_diff = diffusion_3x3x3(
@@ -1598,21 +1604,25 @@ void Boundary_lateral<TF>::exec_lateral_sponge(
             else
                 sponge_layer_wrapper.template operator()<Lbc_location::West, false>(lbc_w, fld);
         }
-        if (md.mpicoordx == md.npx-1 && sw_recycle[Lbc_location::East])
+        // The plain sponge runs on EVERY edge; sw_recycle only chooses the
+        // kernel, inside. It used to gate the whole sponge at east, south and
+        // north, so with recycling off thl/qt were relaxed at the west edge
+        // only. See apply_lbc_sponge_edges.py.
+        if (md.mpicoordx == md.npx-1)
         {
             if (sw_recycle_fld && sw_recycle[Lbc_location::East])
                 sponge_layer_wrapper.template operator()<Lbc_location::East, true>(lbc_e, fld);
             else
                 sponge_layer_wrapper.template operator()<Lbc_location::East, false>(lbc_e, fld);
         }
-        if (md.mpicoordy == 0 && sw_recycle[Lbc_location::South])
+        if (md.mpicoordy == 0)
         {
             if (sw_recycle_fld && sw_recycle[Lbc_location::South])
                 sponge_layer_wrapper.template operator()<Lbc_location::South, true>(lbc_s, fld);
             else
                 sponge_layer_wrapper.template operator()<Lbc_location::South, false>(lbc_s, fld);
         }
-        if (md.mpicoordy == md.npy-1 && sw_recycle[Lbc_location::North])
+        if (md.mpicoordy == md.npy-1)
         {
             if (sw_recycle_fld && sw_recycle[Lbc_location::North])
                 sponge_layer_wrapper.template operator()<Lbc_location::North, true>(lbc_n, fld);
