@@ -76,6 +76,13 @@ void Pres_2<TF>::exec(const double dt, Stats<TF>& stats)
           gd.dzi.data(), fields.rhoref.data(), fields.rhorefh.data(),
           dt);
 
+    // [IB] sw_wall_kinematic (apply_ib_wall_kinematic.py): the terrain keeps
+    // its divergence, a mass source as in Kim, Kim & Choi (2001), so that
+    // the projection does not push back on the terrain-following velocity
+    // imposed on the floor faces; only the air is made divergence free.
+    if (!rhs_zero_cells.empty())
+        zero_rhs_in_terrain(fields.sd.at("p")->fld.data());
+
     // solve the system
     auto tmp1 = fields.get_tmp();
     auto tmp2 = fields.get_tmp();
@@ -97,6 +104,52 @@ void Pres_2<TF>::exec(const double dt, Stats<TF>& stats)
 #endif
 
 #ifndef USECUDA
+template<typename TF>
+void Pres_2<TF>::zero_rhs_in_terrain(TF* const restrict p)
+{
+    auto& gd = grid.get_grid_data();
+    const int kkp = gd.imax*gd.jmax;
+
+    for (const int n : rhs_zero_cells)
+        p[n] = TF(0);
+
+    // A periodic or all-Neumann (open BC) problem is only solvable if the
+    // dz-weighted sum of the right-hand side vanishes. With the terrain
+    // excluded it equals the net mass flux from the terrain into the air;
+    // the lateral boundary removes it under patch 28, anything left is
+    // spread evenly over the air (a uniform residual divergence).
+    if (in_terrain.empty())
+    {
+        in_terrain.assign(gd.imax*gd.jmax*gd.kmax, 0);
+        for (const int n : rhs_zero_cells)
+            in_terrain[n] = 1;
+    }
+
+    TF acc[2] = {TF(0), TF(0)};
+    for (int n=0; n<gd.imax*gd.jmax*gd.kmax; ++n)
+        if (!in_terrain[n])
+        {
+            const TF dz = gd.dz[n/kkp + gd.kgc];
+            acc[0] += p[n] * dz;
+            acc[1] += dz;
+        }
+    master.sum(acc, 2);
+    const TF mean = acc[0] / acc[1];
+
+    for (int n=0; n<gd.imax*gd.jmax*gd.kmax; ++n)
+        if (!in_terrain[n])
+            p[n] -= mean;
+
+    if (!rhs_zero_reported)
+    {
+        master.print_message(
+                "Pres: [IB] sw_wall_kinematic - right-hand side zero in %d terrain "
+                "cells (this process), residual air divergence %.3g kg/m3/s2\n",
+                static_cast<int>(rhs_zero_cells.size()), double(mean));
+        rhs_zero_reported = true;
+    }
+}
+
 template<typename TF>
 TF Pres_2<TF>::check_divergence()
 {
@@ -521,6 +574,12 @@ TF Pres_2<TF>::calc_divergence(const TF* const restrict u, const TF* const restr
             #pragma ivdep
             for (int i=gd.istart; i<gd.iend; ++i)
             {
+                // [IB] sw_wall_kinematic: the terrain keeps its divergence
+                // (apply_ib_wall_kinematic.py), report the air only.
+                if (!in_terrain.empty() && in_terrain[(i-gd.igc) + (j-gd.jgc)*gd.imax
+                                                     + (k-gd.kgc)*gd.imax*gd.jmax])
+                    continue;
+
                 const int ijk = i + j*jj + k*kk;
                 div = rhoref[k]*((u[ijk+ii]-u[ijk])*dxi + (v[ijk+jj]-v[ijk])*dyi)
                     + (rhorefh[k+1]*w[ijk+kk]-rhorefh[k]*w[ijk])*dzi[k];

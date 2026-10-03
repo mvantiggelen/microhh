@@ -21,6 +21,7 @@
  */
 
 #include <cstdio>
+#include <algorithm>
 #include <iostream>
 #include <cmath>
 #include <chrono>
@@ -290,42 +291,26 @@ int Field3d_io<TF>::save_xz_slice(
         // in each separately.
         const int mpi_rank_recv = 0;
 
-        // Create send/receive MPI types.
-        MPI_Datatype send_type;
-        MPI_Type_vector(kmax, gd.imax, gd.imax, mpi_fp_type<TF>(), &send_type);
-        MPI_Type_commit(&send_type);
-
-        MPI_Datatype recv_type;
-        int totxzsize_recv [2] = {kmax, gd.itot};
-        int subxzsize_recv [2] = {kmax, gd.imax};
-        int subxzstart_recv[2] = {0, md.mpicoordx*gd.imax};
-        MPI_Type_create_subarray(2, totxzsize_recv, subxzsize_recv, subxzstart_recv, MPI_ORDER_C, mpi_fp_type<TF>(), &recv_type);
-        MPI_Type_commit(&recv_type);
-
-        MPI_Datatype recv_type_r;
-        MPI_Type_create_resized(recv_type, 0, sizeof(TF), &recv_type_r);
-        MPI_Type_commit(&recv_type_r);
-
-        // Create size/offset arrays for MPI_Gatherv().
-        std::vector<int> counts(md.npx);
-        std::fill(counts.begin(), counts.end(), 1);
-
-        std::vector<int> offset(md.npx);
-        for (int i=0; i<md.npx; ++i)
-            offset[i] = i*gd.imax;
-
-        // Gather the data!
+        // apply_cross_gather_contig.py: no derived MPI datatypes (hpcx
+        // leaks ~3.5 kB per gather even when they are freed). Gather the
+        // contiguous tiles and put them in place on the root.
         std::vector<TF> recv;
+        std::vector<TF> buf;
         if (md.mpicoordx == mpi_rank_recv)
+        {
             recv.resize(gd.itot*gd.ktot);
+            buf.resize(size_t(count)*md.npx);
+        }
 
-        MPI_Gatherv(tmp, 1, send_type, recv.data(), counts.data(), offset.data(), recv_type_r, mpi_rank_recv, md.commx);
+        MPI_Gather(tmp, count, mpi_fp_type<TF>(), buf.data(), count, mpi_fp_type<TF>(),
+                   mpi_rank_recv, md.commx);
 
-        // Free the datatypes: without this every slice leaks three of
-        // them, on every rank, for the whole run (apply_cross_type_free.py).
-        MPI_Type_free(&send_type);
-        MPI_Type_free(&recv_type);
-        MPI_Type_free(&recv_type_r);
+        if (md.mpicoordx == mpi_rank_recv)
+            for (int p=0; p<md.npx; ++p)
+                for (int k=0; k<kmax; ++k)
+                    std::copy(buf.begin() + size_t(p)*count + size_t(k)*gd.imax,
+                              buf.begin() + size_t(p)*count + size_t(k+1)*gd.imax,
+                              recv.begin() + size_t(k)*gd.itot + size_t(p)*gd.imax);
 
         // Only MPI rank 0 writes the data.
         if (md.mpicoordx == mpi_rank_recv)
@@ -434,42 +419,26 @@ int Field3d_io<TF>::save_yz_slice(
         // const int mpi_rank_recv = md.mpicoordx * md.npy;
         const int mpi_rank_recv = 0;
 
-        // Create send/receive MPI types.
-        MPI_Datatype send_type;
-        MPI_Type_vector(kmax, gd.jmax, gd.jmax, mpi_fp_type<TF>(), &send_type);
-        MPI_Type_commit(&send_type);
-
-        MPI_Datatype recv_type;
-        int totyzsize_recv [2] = {kmax, gd.jtot};
-        int subyzsize_recv [2] = {kmax, gd.jmax};
-        int subyzstart_recv[2] = {0, md.mpicoordy*gd.jmax};
-        MPI_Type_create_subarray(2, totyzsize_recv, subyzsize_recv, subyzstart_recv, MPI_ORDER_C, mpi_fp_type<TF>(), &recv_type);
-        MPI_Type_commit(&recv_type);
-
-        MPI_Datatype recv_type_r;
-        MPI_Type_create_resized(recv_type, 0, sizeof(TF), &recv_type_r);
-        MPI_Type_commit(&recv_type_r);
-
-        // Create size/offset arrays for MPI_Gatherv().
-        std::vector<int> counts(md.npy);
-        std::fill(counts.begin(), counts.end(), 1);
-
-        std::vector<int> offset(md.npy);
-        for (int i=0; i<md.npy; ++i)
-            offset[i] = i*gd.jmax;
-
-        // Gather the data!
+        // apply_cross_gather_contig.py: no derived MPI datatypes (hpcx
+        // leaks ~3.5 kB per gather even when they are freed). Gather the
+        // contiguous tiles and put them in place on the root.
         std::vector<TF> recv;
+        std::vector<TF> buf;
         if (md.mpicoordy == mpi_rank_recv)
+        {
             recv.resize(gd.jtot*gd.ktot);
+            buf.resize(size_t(count)*md.npy);
+        }
 
-        MPI_Gatherv(tmp, 1, send_type, recv.data(), counts.data(), offset.data(), recv_type_r, mpi_rank_recv, md.commy);
+        MPI_Gather(tmp, count, mpi_fp_type<TF>(), buf.data(), count, mpi_fp_type<TF>(),
+                   mpi_rank_recv, md.commy);
 
-        // Free the datatypes: without this every slice leaks three of
-        // them, on every rank, for the whole run (apply_cross_type_free.py).
-        MPI_Type_free(&send_type);
-        MPI_Type_free(&recv_type);
-        MPI_Type_free(&recv_type_r);
+        if (md.mpicoordy == mpi_rank_recv)
+            for (int p=0; p<md.npy; ++p)
+                for (int k=0; k<kmax; ++k)
+                    std::copy(buf.begin() + size_t(p)*count + size_t(k)*gd.jmax,
+                              buf.begin() + size_t(p)*count + size_t(k+1)*gd.jmax,
+                              recv.begin() + size_t(k)*gd.jtot + size_t(p)*gd.jmax);
 
         // Only MPI rank 0 writes the data.
         if (md.mpicoordy == mpi_rank_recv)
@@ -571,43 +540,31 @@ int Field3d_io<TF>::save_xy_slice(
 // each MPI task into a single binary using MPI-IO is **extremely** slow. With `DISABLE_2D_MPIIO`,
 // the 2D slices are first gathered on MPI rank 0, and then written without MPI-IO.
 //
-    // Create send/receive MPI types.
-    MPI_Datatype send_type;
-    MPI_Type_vector(gd.jmax, gd.imax, gd.imax, mpi_fp_type<TF>(), &send_type);
-    MPI_Type_commit(&send_type);
+    // apply_cross_gather_contig.py: no derived MPI datatypes (hpcx leaks
+    // ~3.5 kB per gather even when they are freed). Gather the contiguous
+    // tiles and put them in place on the root. Rank p of commxy holds tile
+    // (p % npx, p / npx), as in the stock Gatherv offsets.
+    std::vector<TF> recv;
+    std::vector<TF> buf;
+    if (md.mpiid == 0)
+    {
+        recv.resize(gd.itot*gd.jtot);
+        buf.resize(size_t(count)*md.nprocs);
+    }
 
-    MPI_Datatype recv_type;
-    int totxysize_recv [2] = {gd.jtot, gd.itot};
-    int subxysize_recv [2] = {gd.jmax, gd.imax};
-    int subxystart_recv[2] = {md.mpicoordy*gd.jmax, md.mpicoordx*gd.imax};
-    MPI_Type_create_subarray(2, totxysize_recv, subxysize_recv, subxystart_recv, MPI_ORDER_C, mpi_fp_type<TF>(), &recv_type);
-    MPI_Type_commit(&recv_type);
+    MPI_Gather(tmp, count, mpi_fp_type<TF>(), buf.data(), count, mpi_fp_type<TF>(),
+               0, md.commxy);
 
-    MPI_Datatype recv_type_r;
-    MPI_Type_create_resized(recv_type, 0, sizeof(TF), &recv_type_r);
-    MPI_Type_commit(&recv_type_r);
-
-    // Create size/offset arrays for MPI_Gatherv().
-    std::vector<int> counts(md.nprocs);
-    std::fill(counts.begin(), counts.end(), 1);
-
-    std::vector<int> offset(md.nprocs);
-    for (int i=0; i<md.npx; ++i)
-        for (int j=0; j<md.npy; ++j)
+    if (md.mpiid == 0)
+        for (int p=0; p<md.nprocs; ++p)
         {
-            const int ii = i+j*md.npx;
-            offset[ii] = i*gd.imax + j*gd.jmax*gd.itot;
+            const int px = p % md.npx;
+            const int py = p / md.npx;
+            for (int j=0; j<gd.jmax; ++j)
+                std::copy(buf.begin() + size_t(p)*count + size_t(j)*gd.imax,
+                          buf.begin() + size_t(p)*count + size_t(j+1)*gd.imax,
+                          recv.begin() + size_t(py*gd.jmax + j)*gd.itot + size_t(px)*gd.imax);
         }
-
-    // Gather the data!
-    std::vector<TF> recv = std::vector<TF>(gd.itot*gd.jtot);
-    MPI_Gatherv(tmp, 1, send_type, recv.data(), counts.data(), offset.data(), recv_type_r, 0, md.commxy);
-
-    // Free the datatypes: without this every slice leaks three of
-    // them, on every rank, for the whole run (apply_cross_type_free.py).
-    MPI_Type_free(&send_type);
-    MPI_Type_free(&recv_type);
-    MPI_Type_free(&recv_type_r);
 
     // Only MPI rank 0 writes the data.
     if (md.mpiid == 0)

@@ -276,6 +276,8 @@ void Model<TF>::load()
     subdomain->create();
 
     ib->create(*input_nc);
+    pres->set_rhs_zero_cells(ib->get_terrain_cells());
+    ib->load(timeloop->get_iotime());   // apply_ib_seb.py: prognostic surface state
     ib->create_column(*column);
     buffer->create(*input, *input_nc, *stats, *timeloop);
     force->create(*input, *input_nc, *stats, *timeloop);
@@ -413,6 +415,10 @@ void Model<TF>::exec()
                 aerosol   ->update_time_dependent(*timeloop);
                 background->update_time_dependent(*timeloop);
                 buffer    ->update_time_dependent(*timeloop);
+                // The 2-D IB surface condition, in time. Runs
+                // with the other time-dependent updates, so it is
+                // in place before the wall model and the scalar
+                // ghost cells, which both read what it changes.
                 ib        ->update_time_dependent(*timeloop);
 
                 // Set the cyclic BCs of the prognostic 3D fields.
@@ -456,7 +462,11 @@ void Model<TF>::exec()
                 boundary->exec(*thermo, *radiation, *microphys, *timeloop);
                 boundary->set_ghost_cells();
 
-                // Monin-Obukhov wall model
+                // Monin-Obukhov wall model. BEFORE exec_scalars and
+                // exec_momentum, because it fills the ghost cells'
+                // blend coefficients that both of them use; AFTER
+                // diff->exec_viscosity and thermo->exec, because it
+                // reads evisc and the buoyancy.
                 ib->exec_wall_model(*thermo, *stats);
 
                 // Set the immersed boundary conditions for scalars.
@@ -479,10 +489,15 @@ void Model<TF>::exec()
                 check("diff");
 
                 // The IB surface exchange for scalars, as a source term.
+                // MUST follow diff->exec: it subtracts the diffusive
+                // flux across every wall face before adding the MOST
+                // one. See apply_ib_scalar_flux.py.
                 ib->exec_scalar_flux(*thermo, *radiation, *stats);
-                // the tangential stress, same pattern, on the u and v
+                // ... and the tangential stress, same pattern, on the u and v
+                // grids. See apply_ib_momentum_flux.py.
                 ib->exec_momentum_flux(*stats);
                 check("ib_scalar_flux");
+
 
                 // Calculate the tendency due to damping in the buffer layer.
                 buffer->exec(*stats);
@@ -507,6 +522,7 @@ void Model<TF>::exec()
 
                 // Set the immersed boundary conditions
                 ib->exec_momentum();
+                lbc->set_rock_flux(ib->get_rock_flux(0), ib->get_rock_flux(1));
 
                 // Solve the poisson equation for pressure.
                 const bool pres_fix = true;
@@ -520,6 +536,7 @@ void Model<TF>::exec()
 
                 // Wall-normal velocity back to zero on every wall face,
                 // so advection cannot carry anything through the terrain.
+                // PALM does the same after its FFT pressure solve.
                 ib->exec_impermeable();
 
                 // Apply the limiter as the last tendency.
@@ -625,6 +642,7 @@ void Model<TF>::exec()
                         // Save the thermo before the split of the thread, to avoid overwrite during stats
                         // leading to restart failures.
                         thermo->save(iotime);
+                        ib->save(iotime);   // apply_ib_seb.py
 
                         #pragma omp task default(shared)
                         {

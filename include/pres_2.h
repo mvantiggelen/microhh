@@ -51,11 +51,15 @@ class Pres_2 : public Pres<TF>
         #endif
 
     private:
+        void zero_rhs_in_terrain(TF* const restrict);   // apply_ib_wall_kinematic.py
+        std::vector<char> in_terrain;                   // mask of rhs_zero_cells, no ghost cells
         using Pres<TF>::master;
         using Pres<TF>::grid;
         using Pres<TF>::fields;
         using Pres<TF>::field3d_operators;
         using Pres<TF>::fft;
+        using Pres<TF>::rhs_zero_cells;
+        using Pres<TF>::rhs_zero_reported;
         Boundary_cyclic<TF> boundary_cyclic;
 
         std::vector<TF> bmati;

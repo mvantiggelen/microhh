@@ -63,6 +63,12 @@ struct Wall_cells
     std::vector<TF> obuk;    // kept between substeps as the iteration's guess
     std::vector<TF> ustar;
     std::vector<TF> utan;    // tangential speed used, for diagnostics
+
+    // apply_ib_wall_slope.py. Floor faces only; risers keep the defaults.
+    std::vector<TF> afac;    // surface area per unit face area, 1/cos(alpha)
+    std::vector<TF> nx;      // unit normal of the DEM surface of the column
+    std::vector<TF> ny;
+    std::vector<TF> nz;
 };
 
 // Ghost cell info on staggered grid
@@ -176,12 +182,22 @@ class Immersed_boundary
         void exec_strain_most();
 
         void exec_impermeable();
+        // Net mass flux from the terrain into the air through the floor and
+        // riser faces (kg/s, 0: x part, 1: y part), set by exec_momentum
+        // under [IB] sw_wall_kinematic. Zero otherwise.
+        TF get_rock_flux(const int axis) const { return rock_flux[axis]; }
+        // The terrain cells (no-ghost-cell index, the layout of the pressure
+        // solver) under [IB] sw_wall_kinematic; empty otherwise.
+        const std::vector<int>& get_terrain_cells() const { return terrain_cells; }
         // Air-only scalar advection next to the terrain: [IB] sw_advec_wall.
         void exec_advec_wall();
         // Keep the inside of the terrain inert: see [IB] sw_blank_solid.
         void blank_solid_momentum();
         void blank_solid_scalars();
         void update_time_dependent(Timeloop<TF>&);
+        // Restart files of the prognostic surface state ([IB] sw_seb).
+        void save(const int);
+        void load(const int);
         // Re-interpolate the current sbot_2d onto the ghost cells' wall points.
         void sbot_2d_to_ghosts();
         void exec_wall_model(Thermo<TF>&, Stats<TF>&);
@@ -241,6 +257,12 @@ class Immersed_boundary
         TF z0h_max      = TF(0.1);
         bool z0_reported = false;
         TF tPr_wm;                  // [diff] tPr, for the scalar diffusivity
+        // apply_ib_sgs_generic.py: the K fields of the [diff] closure, so the
+        // undo/rescale/cap code reads what the operator used.
+        int sgs_kind = 0;           // 0 smag2, 1 smag2 swanisotropic, 2 tke2
+        void get_sgs_k(const std::string&, const TF*&, const TF*&, TF&,
+                       std::shared_ptr<Field3d<TF>>&);
+        std::vector<std::string> sgs_k_fields();
         Wall_cells<TF> wall;
         bool sw_momentum_flux;
         bool sw_momentum_flux_vertical;
@@ -260,6 +282,7 @@ class Immersed_boundary
         bool sw_evisc_solid_zero = false;
         int  dn_probe_every = 0;
         long dn_probe_calls = 0;
+        int  evisc_solid_mode = 0;   // apply_ib_evisc_solid_cap.py: 0 off, 1 zero, 2 cap
 
         // Wall damping of the Smagorinsky length at the IB. See
         // apply_ib_wall_mlen.py.
@@ -282,6 +305,23 @@ class Immersed_boundary
         int  n_zl_clamped_last;
         bool sw_wall_stability_vertical;
         bool sw_impermeable;
+        bool sw_wall_slope;         // apply_ib_wall_slope.py
+        TF wall_dn_min;             // lower bound on the wall distance, in dz
+
+        // [IB] sw_wall_kinematic - apply_ib_wall_kinematic.py. Floor faces
+        // get w = u.grad(eta), eta = z_s - zh(floor): the sub-grid surface.
+        bool sw_wall_kinematic = false;
+        std::vector<int> kin_w_ijk;         // floor faces (index of w)
+        std::vector<TF> kin_sx;             // d(eta)/dx of their column
+        std::vector<TF> kin_sy;             // d(eta)/dy of their column
+        std::vector<int> kin_u_ijk;         // riser faces normal to x this process owns (index of u)
+        std::vector<int> kin_v_ijk;         // riser faces normal to y (index of v)
+        bool sw_openbc_ib = false;          // [boundary_lateral] sw_openbc
+        bool sw_kin_export = false;         // patch 28 lets the net floor flux out of the terrain
+        std::vector<TF> kin_w_tmp;          // w = u.grad(eta) per floor face, before the mean is removed
+        TF rock_flux[2] = {TF(0), TF(0)};   // net air <- rock mass flux, x and y part (kg/s)
+        std::vector<int> terrain_cells;     // for Pres::set_rhs_zero_cells
+        void exec_wall_kinematic();
         std::map<std::string, std::vector<TF>> wall_flux;
         std::vector<std::string> crosslist_wall;
         /*
@@ -378,6 +418,41 @@ class Immersed_boundary
         // column, still computed once because the soil does not move.
         std::vector<TF> veg_f2;
         std::vector<TF> veg_f2b;
+
+        // [IB] sw_seb - apply_ib_seb.py. Surface energy balance on the
+        // non-glaciated columns: Ts from the linearised SEB, prognostic soil
+        // temperature (veg_t_soil) on land, a mixed layer on water.
+        bool sw_seb = false;
+        bool seb_initialized = false;
+        TF seb_emis_land;                 // surface emissivity, land        [-]
+        TF seb_emis_water;                // surface emissivity, water       [-]
+        TF seb_lambda_veg;                // skin conductivity, vegetation   [W m-2 K-1]
+        TF seb_lambda_bare;               // skin conductivity, bare ground  [W m-2 K-1]
+        TF seb_cs_land;                   // skin heat capacity, land        [J m-2 K-1]
+        TF seb_frs_veg;                   // shortwave share to the soil, full cover [-]
+        TF seb_lake_mld;                  // mixed-layer depth of water      [m]
+        TF seb_albedo_land;               // used only without albedo_ib     [-]
+        TF seb_albedo_water;              // used only without albedo_ib     [-]
+        TF seb_water_min_frac;            // ib_water above this: water      [-]
+        double seb_dt = 0.;               // full time step                  [s]
+        int seb_substep = 0;              // RK substep of this call
+        std::vector<TF> seb_class;        // per column: 0 ice/none, 1 land, 2 water
+        std::vector<TF> seb_albedo;       // per column                      [-]
+        std::vector<TF> seb_lambda;       // per column                      [W m-2 K-1]
+        std::vector<TF> seb_tskin;        // the surface temperature in use  [K]
+        std::vector<TF> seb_tprog;        // stored state with heat capacity [K]
+        std::vector<TF> seb_tprog_old;    // ... at the start of the step    [K]
+        std::vector<TF> seb_rnet;         // net radiation                   [W m-2]
+        std::vector<TF> seb_g;            // ground heat flux, into the soil [W m-2]
+        std::vector<TF> seb_t_soil_old;   // soil temperature at the start of the step
+        std::vector<TF> seb_kappa_h;      // soil heat diffusivity, half levels [m2 s-1]
+        std::vector<TF> seb_rho_c_top;    // volumetric heat capacity, top layer [J m-3 K-1]
+        std::vector<TF> seb_soil_dzi;     // 1/dz of the soil layers, bottom-up
+        std::vector<TF> seb_soil_dzhi;    // 1/dzh between layers k-1 and k
+        void create_seb(Netcdf_handle&);
+        void exec_seb(Thermo<TF>&, Radiation<TF>&);
+        void seb_to_sbot();
+        std::vector<TF> thermo_pref;      // base-state pressure, cached     [Pa]
 
         // IB input from DEM
         std::vector<TF> dem;

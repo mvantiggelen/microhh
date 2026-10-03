@@ -58,6 +58,11 @@ class Boundary_lateral
         void update_time_dependent(Timeloop<TF>&, const bool pres_fix=false);
         unsigned long get_time_limit(unsigned long);
 
+        // Net mass flux from the IB terrain into the air (kg/s, x and y
+        // part), from Immersed_boundary::get_rock_flux. Under patch 28 it is
+        // let out of the rock through the edge faces (apply_ib_wall_kinematic.py).
+        void set_rock_flux(const TF fx, const TF fy) { rock_flux[0] = fx; rock_flux[1] = fy; }
+
     private:
         Master& master;
         Grid<TF>& grid;
@@ -67,6 +72,9 @@ class Boundary_lateral
         void read_lbc(TF&, TF&, Lbc_map<TF>&, Lbc_map<TF>&, Lbc_map<TF>&, Lbc_map<TF>&, const int);
         void read_xy_slice(
                 std::vector<TF>&, const std::string&, const int);
+
+        // Terrain-following periodic LBCs (patch 28, apply_lbc_tf_periodic.py).
+        void refresh_lbc_tf_periodic(const TF);
 
         bool sw_openbc;
         bool sw_openbc_uv;
@@ -119,6 +127,17 @@ class Boundary_lateral
         std::vector<TF> w_top_2d;
         std::vector<TF> w_top_2d_prev;
         std::vector<TF> w_top_2d_next;
+
+        // Terrain-following periodic LBCs: each edge buffer is refilled from
+        // the opposite edge, at the same height above the local surface.
+        bool sw_lbc_tf_periodic;
+        bool lbc_tf_initialized;                    // Buffers filled at least once.
+        bool sw_lbc_rock_export = false;            // [IB] sw_wall_kinematic under patch 28.
+        bool rock_export_reported = false;          // apply_ib_wall_kinematic.py log line printed.
+        std::string lbc_tf_dem_file;
+        std::map<std::string, TF> lbc_tf_gradient;  // Environmental d(phi)/dz per scalar.
+        std::vector<TF> dem_tf;                     // Surface height, local columns incl. halo.
+        TF rock_flux[2] = {TF(0), TF(0)};          // Air <- terrain mass flux, x and y part.
 
         const std::string tend_name = "lbc_sponge";
         const std::string tend_longname = "Lateral sponge layer";

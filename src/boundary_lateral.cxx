@@ -802,6 +802,8 @@ Boundary_lateral<TF>::Boundary_lateral(
         master(masterin), grid(gridin), fields(fieldsin), field3d_io(masterin, gridin)
 {
     sw_openbc = inputin.get_item<bool>("boundary_lateral", "sw_openbc", "", false);
+    sw_lbc_tf_periodic = false;
+    lbc_tf_initialized = false;
 
     if (sw_openbc)
     {
@@ -841,6 +843,27 @@ Boundary_lateral<TF>::Boundary_lateral(
             recycle_offset = inputin.get_item<int>("boundary_lateral", "recycle_offset", "");
         }
 
+        // Terrain-following periodic LBCs (patch 28): every edge is fed from
+        // the opposite edge at the same height above the local surface,
+        // instead of from lbc_* files. See apply_lbc_tf_periodic.py.
+        sw_lbc_tf_periodic = inputin.get_item<bool>(
+                "boundary_lateral", "sw_lbc_tf_periodic", "", false);
+
+        // apply_ib_wall_kinematic.py: the terrain is out of the pressure
+        // solve, so its edge faces must carry exactly the terrain mass flux.
+        sw_lbc_rock_export = sw_lbc_tf_periodic && inputin.get_item<bool>(
+                "IB", "sw_wall_kinematic", "", false);
+
+        if (sw_lbc_tf_periodic)
+        {
+            lbc_tf_dem_file = inputin.get_item<std::string>(
+                    "boundary_lateral", "lbc_tf_dem", "", "dem.0000000");
+
+            for (auto& fld : slist)
+                lbc_tf_gradient.emplace(fld, inputin.get_item<TF>(
+                        "boundary_lateral", "lbc_tf_gradient", fld, TF(0)));
+        }
+
         //sw_recycle = inputin.get_item<bool>("boundary_lateral", "sw_recycle", "", false);
         //if (sw_recycle)
         //{
@@ -869,6 +892,21 @@ void Boundary_lateral<TF>::init()
     auto& md = master.get_MPI_data();
 
     // Checks!
+    if (sw_lbc_tf_periodic)
+    {
+        if (sw_timedep)
+            throw std::runtime_error(
+                    "[boundary_lateral] sw_lbc_tf_periodic feeds the LBCs from the opposite "
+                    "edge and cannot be combined with sw_timedep=true");
+        if (!sw_sponge || n_sponge < 1)
+            throw std::runtime_error(
+                    "[boundary_lateral] sw_lbc_tf_periodic needs sw_sponge=true and n_sponge >= 1");
+        if (gd.imax < 2*n_sponge + gd.igc + 1 || gd.jmax < 2*n_sponge + gd.jgc + 1)
+            throw std::runtime_error(
+                    "[boundary_lateral] sw_lbc_tf_periodic needs imax, jmax >= 2*n_sponge + 4 "
+                    "(the source band must sit on the edge rank)");
+    }
+
     if (any_true(sw_recycle))
     {
         if (!sw_sponge)
@@ -1229,7 +1267,38 @@ void Boundary_lateral<TF>::create(
         }
     }
 
-    if (!sw_timedep)
+    if (sw_lbc_tf_periodic)
+    {
+        // No lbc_* files: the buffers are refilled from the opposite edge
+        // in set_ghost_cells. Only the surface height is needed.
+        dem_tf.resize(gd.ijcells);
+        std::fill(dem_tf.begin(), dem_tf.end(), TF(0));
+
+        FILE* pfile = std::fopen(lbc_tf_dem_file.c_str(), "rb");
+        const bool has_dem = (pfile != nullptr);
+        if (pfile != nullptr)
+            std::fclose(pfile);
+
+        if (has_dem)
+        {
+            auto tmp = fields.get_tmp();
+            if (field3d_io.load_xy_slice(dem_tf.data(), tmp->fld.data(), lbc_tf_dem_file.c_str()))
+                throw std::runtime_error("sw_lbc_tf_periodic: reading " + lbc_tf_dem_file + " failed");
+            fields.release_tmp(tmp);
+        }
+
+        master.print_message(
+                "LBC: sw_lbc_tf_periodic ON - each edge is fed from the opposite edge (offset "
+                + std::to_string(gd.itot - 2*n_sponge) + " x " + std::to_string(gd.jtot - 2*n_sponge)
+                + " cells), matched on height above the surface"
+                + (has_dem ? " from " + lbc_tf_dem_file : std::string(" (no DEM found: flat)")) + "\n");
+
+        for (auto& it : lbc_tf_gradient)
+            master.print_message(
+                    "LBC: sw_lbc_tf_periodic - " + it.first + " shifted with the environment, d/dz = "
+                    + std::to_string(it.second) + "\n");
+    }
+    else if (!sw_timedep)
     {
         // Read LBC data directly into `lbc_{w/e/n/s}`.
         TF div_u = 0;
@@ -1339,6 +1408,20 @@ void Boundary_lateral<TF>::set_ghost_cells(
 {
     if (!sw_openbc)
         return;
+
+    // Terrain-following periodic LBCs are refreshed right before the
+    // pressure solve (update_time_dependent with pres_fix), so that the
+    // boundary-normal velocities the projection sees are the ones the field
+    // keeps until the next solve. Refreshing them here as well, at the start
+    // of a substep, changes the face velocities of a field that was just
+    // made divergence free: in the B13 smoke test that left a divergence of
+    // ~1e-2 1/s in the edge cells, i.e. a -thl*div source of K/s, and the
+    // edges cooled by >10 K in five minutes. Only the very first call fills.
+    if (sw_lbc_tf_periodic && !lbc_tf_initialized)
+    {
+        refresh_lbc_tf_periodic(TF(0));
+        lbc_tf_initialized = true;
+    }
 
     auto& gd = grid.get_grid_data();
     auto& md = master.get_MPI_data();
@@ -1640,6 +1723,13 @@ void Boundary_lateral<TF>::update_time_dependent(
         Timeloop<TF>& timeloop,
         const bool pres_fix)
 {
+    if (sw_openbc && sw_lbc_tf_periodic && pres_fix)
+    {
+        refresh_lbc_tf_periodic(TF(timeloop.get_sub_time_step()));
+        lbc_tf_initialized = true;
+        return;
+    }
+
     if (!sw_openbc || !sw_timedep)
         return;
 
@@ -1807,6 +1897,468 @@ void Boundary_lateral<TF>::read_xy_slice(
     fields.release_tmp(tmp);
 }
 
+
+template <typename TF>
+void Boundary_lateral<TF>::refresh_lbc_tf_periodic(const TF dt_sub)
+{
+    /* Terrain-following periodic lateral boundaries (patch 28).
+
+       The un-sponged interior is treated as periodic: the buffer of an
+       edge (ghost + sponge cells) is filled from the band of the same width
+       just inside the sponge of the opposite edge, an offset of
+       itot - 2*n_sponge cells in x (jtot - 2*n_sponge in y). Each buffer
+       column takes the source column's value at the same height ABOVE ITS
+       OWN SURFACE, interpolated linearly in z, so a sloping domain can be
+       closed on itself. Scalars are shifted with the environment by
+       lbc_tf_gradient * (zs_buffer - zs_source), which keeps their anomaly
+       relative to a stratified environment. Cells inside the terrain are
+       treated the same way, so the IB ghost and blanked cells of the source
+       carry over: setting them to anything else (e.g. zero momentum) breaks
+       the mirror condition the IB imposes at the edge rows and drives a
+       spurious vertical jet along the boundary.
+
+       Momentum is taken from the PROVISIONAL field u + dt_sub*ut, the field
+       the pressure solve is about to project. A periodic projection leaves
+       the plane-mean velocity alone; an open one pins the flux through every
+       plane to the boundary faces. Feeding the faces the provisional band
+       flux makes the pinned value the one a periodic solve would keep, so
+       the column-mean flow evolves by its own momentum budget (Coriolis,
+       friction, large-scale pressure gradient) instead of being frozen at,
+       or leaking from, the value of the previous step. */
+
+    auto& gd = grid.get_grid_data();
+    auto& md = master.get_MPI_data();
+
+    std::vector<std::string> names;
+    if (sw_openbc_uv)
+    {
+        names.push_back("u");
+        names.push_back("v");
+    }
+    if (sw_openbc_w)
+        names.push_back("w");
+    for (auto& fld : slist)
+        names.push_back(fld);
+
+    const int nfld = names.size();
+    const int ns = n_sponge;
+
+    // Surface height of a local column; halo columns take the nearest interior one.
+    auto zs_local = [&](const int i, const int j)
+    {
+        const int ic = std::min(std::max(i, gd.istart), gd.iend-1);
+        const int jc = std::min(std::max(j, gd.jstart), gd.jend-1);
+        return dem_tf[ic + jc*gd.icells];
+    };
+
+    // Value of a source column at height zt above the domain floor. The
+    // column is strided by `stride` in the packed band, one value per k.
+    // Below the lowest level the lowest value is used; above the top level
+    // the top value plus `grad_top`*(zt - z_top), so a scalar continues
+    // along its environmental gradient and momentum stays constant.
+    auto interp_column = [&](
+            const TF* const col, const int stride, const std::vector<TF>& zl,
+            const TF zt, const TF grad_top, TF& value)
+    {
+        const int kfa = gd.kstart;
+        const TF z_lo = zl[kfa];
+        const TF z_hi = zl[gd.kend-1];
+        const TF zc = std::min(std::max(zt, z_lo), z_hi);
+
+        int k0 = kfa;
+        while (k0 < gd.kend-2 && zl[k0+1] <= zc)
+            ++k0;
+        const int k1 = std::min(k0+1, gd.kend-1);
+
+        const TF f = (k1 == k0) ? TF(0) : (zc - zl[k0]) / (zl[k1] - zl[k0]);
+        value = (TF(1)-f)*col[(k0-gd.kstart)*stride] + f*col[(k1-gd.kstart)*stride];
+
+        if (zt > z_hi)
+            value += grad_top * (zt - z_hi);
+    };
+
+    // Fill one buffer column (k = kstart..kend-1) from one packed source column.
+    auto fill_column = [&](
+            TF* const out, const int out_kstride,
+            const TF* const col, const int col_kstride,
+            const std::string& name,
+            const TF zs_own, const TF zs_src)
+    {
+        const bool is_mom = (name == "u" || name == "v" || name == "w");
+        const std::vector<TF>& zl = (name == "w") ? gd.zh : gd.z;
+        const TF grad = is_mom ? TF(0) : lbc_tf_gradient.at(name);
+        const TF offset = grad * (zs_own - zs_src);
+
+        for (int k=gd.kstart; k<gd.kend; ++k)
+        {
+            TF value;
+            interp_column(col, col_kstride, zl, zl[k] - zs_own + zs_src, grad, value);
+            out[k*out_kstride] = value + offset;
+        }
+    };
+
+    const int ktot = gd.kend - gd.kstart;
+
+    // Exchange two packed bands between the ranks at the two ends of a
+    // communicator. With one rank in that direction the copy is local.
+    auto exchange = [&](
+            std::vector<TF>& send_lo, std::vector<TF>& recv_lo,
+            std::vector<TF>& send_hi, std::vector<TF>& recv_hi,
+            const bool is_lo, const bool is_hi, const int nproc, const bool along_x)
+    {
+        if (nproc == 1)
+        {
+            recv_lo = send_hi;
+            recv_hi = send_lo;
+            return;
+        }
+        #ifdef USEMPI
+        MPI_Comm comm = along_x ? md.commx : md.commy;
+        if (is_lo)
+            MPI_Sendrecv(
+                    send_lo.data(), send_lo.size(), mpi_fp_type<TF>(), nproc-1, 28,
+                    recv_lo.data(), recv_lo.size(), mpi_fp_type<TF>(), nproc-1, 28,
+                    comm, MPI_STATUS_IGNORE);
+        if (is_hi)
+            MPI_Sendrecv(
+                    send_hi.data(), send_hi.size(), mpi_fp_type<TF>(), 0, 28,
+                    recv_hi.data(), recv_hi.size(), mpi_fp_type<TF>(), 0, 28,
+                    comm, MPI_STATUS_IGNORE);
+        #endif
+    };
+
+    // X DIRECTION. Packed band layout: [fld][k][j][c], then zs[j][c].
+    {
+        const bool is_w = (md.mpicoordx == 0);
+        const bool is_e = (md.mpicoordx == md.npx-1);
+
+        const int nb_w = gd.igc + 1 + ns;   // Widest west buffer (u).
+        const int nb_e = gd.igc + ns;
+        const int i0_for_w = gd.imax - 2*ns;    // Band on the east rank that feeds the west buffer.
+        const int i0_for_e = gd.igc + ns;       // Band on the west rank that feeds the east buffer.
+
+        auto pack = [&](std::vector<TF>& buf, const int i0, const int nb)
+        {
+            buf.resize((nfld*ktot + 1) * gd.jcells * nb);
+            int n = 0;
+            for (auto& name : names)
+            {
+                const TF* const fld = fields.ap.at(name)->fld.data();
+                const TF* const tnd = fields.at.at(name)->fld.data();
+                const TF fac = (name == "u" || name == "v" || name == "w") ? dt_sub : TF(0);
+                for (int k=gd.kstart; k<gd.kend; ++k)
+                    for (int j=0; j<gd.jcells; ++j)
+                        for (int c=0; c<nb; ++c)
+                        {
+                            const int ijk = (i0+c) + j*gd.icells + k*gd.ijcells;
+                            buf[n++] = fld[ijk] + fac*tnd[ijk];
+                        }
+            }
+            for (int j=0; j<gd.jcells; ++j)
+                for (int c=0; c<nb; ++c)
+                    buf[n++] = zs_local(i0+c, j);
+        };
+
+        std::vector<TF> send_w, recv_w, send_e, recv_e;
+        if (is_e)
+            pack(send_e, i0_for_w, nb_w);
+        if (is_w)
+            pack(send_w, i0_for_e, nb_e);
+        if (is_w)
+            recv_w.resize((nfld*ktot + 1) * gd.jcells * nb_w);
+        if (is_e)
+            recv_e.resize((nfld*ktot + 1) * gd.jcells * nb_e);
+
+        exchange(send_w, recv_w, send_e, recv_e, is_w, is_e, md.npx, true);
+
+        auto unpack = [&](Lbc_map<TF>& lbc, const std::vector<TF>& recv, const int nb, const bool west)
+        {
+            const int zs_off = nfld*ktot*gd.jcells*nb;
+            for (int f=0; f<nfld; ++f)
+            {
+                const std::string& name = names[f];
+                const int ngc_pad = (west && name == "u") ? gd.igc+1 : gd.igc;
+                const int nlbc = ngc_pad + ns;
+                std::vector<TF>& out = lbc.at(name);
+                const TF* const band = recv.data() + f*ktot*gd.jcells*nb;
+
+                // Rows outside [jstart, jend) are the corner regions shared
+                // with the y-buffers: they take the nearest interior row of
+                // this buffer, not the source's ghost rows (those are LBC
+                // values themselves, and copying them closes a loop).
+                for (int j=0; j<gd.jcells; ++j)
+                    for (int b=0; b<nlbc; ++b)
+                    {
+                        const int jc = std::min(std::max(j, gd.jstart), gd.jend-1);
+                        // Local column index of buffer cell b, and its source column c.
+                        const int i = west ? b : gd.iend - ns + b;
+                        const int c = b;
+                        const TF zs_src = recv[zs_off + c + jc*nb];
+                        fill_column(
+                                out.data() + b + j*nlbc, nlbc*gd.jcells,
+                                band + c + jc*nb, gd.jcells*nb,
+                                name, zs_local(i, jc), zs_src);
+                    }
+            }
+        };
+
+        if (is_w)
+            unpack(lbc_w, recv_w, nb_w, true);
+        if (is_e)
+            unpack(lbc_e, recv_e, nb_e, false);
+    }
+
+    // Y DIRECTION. Packed band layout: [fld][k][c][i], then zs[c][i].
+    {
+        const bool is_s = (md.mpicoordy == 0);
+        const bool is_n = (md.mpicoordy == md.npy-1);
+
+        const int nb_s = gd.jgc + 1 + ns;   // Widest south buffer (v).
+        const int nb_n = gd.jgc + ns;
+        const int j0_for_s = gd.jmax - 2*ns;
+        const int j0_for_n = gd.jgc + ns;
+
+        auto pack = [&](std::vector<TF>& buf, const int j0, const int nb)
+        {
+            buf.resize((nfld*ktot + 1) * gd.icells * nb);
+            int n = 0;
+            for (auto& name : names)
+            {
+                const TF* const fld = fields.ap.at(name)->fld.data();
+                const TF* const tnd = fields.at.at(name)->fld.data();
+                const TF fac = (name == "u" || name == "v" || name == "w") ? dt_sub : TF(0);
+                for (int k=gd.kstart; k<gd.kend; ++k)
+                    for (int c=0; c<nb; ++c)
+                        for (int i=0; i<gd.icells; ++i)
+                        {
+                            const int ijk = i + (j0+c)*gd.icells + k*gd.ijcells;
+                            buf[n++] = fld[ijk] + fac*tnd[ijk];
+                        }
+            }
+            for (int c=0; c<nb; ++c)
+                for (int i=0; i<gd.icells; ++i)
+                    buf[n++] = zs_local(i, j0+c);
+        };
+
+        std::vector<TF> send_s, recv_s, send_n, recv_n;
+        if (is_n)
+            pack(send_n, j0_for_s, nb_s);
+        if (is_s)
+            pack(send_s, j0_for_n, nb_n);
+        if (is_s)
+            recv_s.resize((nfld*ktot + 1) * gd.icells * nb_s);
+        if (is_n)
+            recv_n.resize((nfld*ktot + 1) * gd.icells * nb_n);
+
+        exchange(send_s, recv_s, send_n, recv_n, is_s, is_n, md.npy, false);
+
+        auto unpack = [&](Lbc_map<TF>& lbc, const std::vector<TF>& recv, const int nb, const bool south)
+        {
+            const int zs_off = nfld*ktot*gd.icells*nb;
+            for (int f=0; f<nfld; ++f)
+            {
+                const std::string& name = names[f];
+                const int ngc_pad = (south && name == "v") ? gd.jgc+1 : gd.jgc;
+                const int nlbc = ngc_pad + ns;
+                std::vector<TF>& out = lbc.at(name);
+                const TF* const band = recv.data() + f*ktot*gd.icells*nb;
+
+                for (int b=0; b<nlbc; ++b)
+                    for (int i=0; i<gd.icells; ++i)
+                    {
+                        const int ic = std::min(std::max(i, gd.istart), gd.iend-1);
+                        const int j = south ? b : gd.jend - ns + b;
+                        const int c = b;
+                        const TF zs_src = recv[zs_off + ic + c*gd.icells];
+                        fill_column(
+                                out.data() + i + b*gd.icells, gd.icells*nlbc,
+                                band + ic + c*gd.icells, gd.icells*nb,
+                                name, zs_local(ic, j), zs_src);
+                    }
+            }
+        };
+
+        if (is_s)
+            unpack(lbc_s, recv_s, nb_s, true);
+        if (is_n)
+            unpack(lbc_n, recv_n, nb_n, false);
+    }
+
+    // Close the mass balance. The two faces of an edge pair are fed from
+    // DIFFERENT planes (the bands just inside the opposite sponges), so their
+    // instantaneous turbulent mass fluxes differ. Left to w_top, that
+    // imbalance pumped the whole column at O(1 m/s) in the B13 smoke test.
+    // A periodic domain has no net lateral divergence, so remove it per edge
+    // pair instead: a uniform correction on the air cells of both faces, in
+    // opposite directions, so that inflow equals outflow; w_top is then zero.
+    if (sw_openbc_uv && !sw_wtop_2d)
+    {
+        auto balance = [&](
+                Lbc_map<TF>& lbc_lo, Lbc_map<TF>& lbc_hi,
+                const std::string& name, const bool along_x,
+                const bool is_lo, const bool is_hi)
+        {
+            // [0] flux lo, [1] flux hi, [2] air area lo, [3] air area hi.
+            TF acc[4] = {TF(0), TF(0), TF(0), TF(0)};
+
+            const int ngc = along_x ? gd.igc : gd.jgc;
+            const int nlbc_lo = ngc + 1 + ns;
+            const int nlbc_hi = ngc + ns;
+            const int nalong = along_x ? gd.jcells : gd.icells;
+            const int along_start = along_x ? gd.jstart : gd.istart;
+            const int along_end = along_x ? gd.jend : gd.iend;
+            const TF dl = along_x ? gd.dy : gd.dx;
+
+            // Buffer index of buffer cell (b, a, k) and the column it sits in.
+            auto index = [&](const int b, const int a, const int k, const int nlbc)
+            {
+                return along_x ? b + a*nlbc + k*nlbc*nalong : a + b*nalong + k*nalong*nlbc;
+            };
+            auto zs_cell = [&](const int b, const int a, const bool hi)
+            {
+                const int n = hi ? (along_x ? gd.iend : gd.jend) - ns + b : b;
+                return along_x ? zs_local(n, a) : zs_local(a, n);
+            };
+
+            // The flux is summed over the WHOLE face, terrain included: the
+            // pressure solve sees the IB ghost values there too, and the
+            // Neumann (DCT) problem is only solvable if the net lateral
+            // inflow is exactly zero (with w_top = 0). Any residual becomes a
+            // uniform divergence, i.e. a spurious -thl*div source everywhere.
+            // The correction itself is spread over the air cells only.
+            auto add = [&](const std::vector<TF>& buf, const int b_face, const int nlbc,
+                           const bool hi, TF& flux, TF& area)
+            {
+                for (int k=gd.kstart; k<gd.kend; ++k)
+                    for (int a=along_start; a<along_end; ++a)
+                    {
+                        const TF w = fields.rhoref[k] * dl * gd.dz[k];
+                        flux += w * buf[index(b_face, a, k, nlbc)];
+                        if (gd.z[k] > zs_cell(b_face, a, hi))
+                            area += w;
+                    }
+            };
+
+            if (is_lo)
+                add(lbc_lo.at(name), ngc, nlbc_lo, false, acc[0], acc[2]);
+            if (is_hi)
+                add(lbc_hi.at(name), ns, nlbc_hi, true, acc[1], acc[3]);
+
+            master.sum(acc, 4);
+
+            const TF area = acc[2] + acc[3];
+            if (area <= TF(0))
+                return;
+            const TF delta = (acc[1] - acc[0]) / area;
+
+            auto shift = [&](std::vector<TF>& buf, const int nlbc, const bool hi, const TF d)
+            {
+                for (int k=gd.kstart; k<gd.kend; ++k)
+                    for (int a=0; a<nalong; ++a)
+                        for (int b=0; b<nlbc; ++b)
+                            if (gd.z[k] > zs_cell(b, a, hi))
+                                buf[index(b, a, k, nlbc)] += d;
+            };
+
+            if (is_lo)
+                shift(lbc_lo.at(name), nlbc_lo, false, delta);
+            if (is_hi)
+                shift(lbc_hi.at(name), nlbc_hi, true, -delta);
+        };
+
+        // apply_ib_wall_kinematic.py: air that leaves through the floor of
+        // a sloping IB surface (or enters from it) passes through the rock,
+        // and the rock is closed everywhere except at the domain edges. The
+        // projection would remove the net part, which on a plane slope is
+        // the mean descent itself. So put the net air <- rock flux F of each
+        // direction on the rock part of that edge pair, half at each face
+        // (rock inflow F/2 at the low face, outflow -F/2 at the high face).
+        // The whole-face balance below then hands F back to the air at the
+        // opposite edge: on a plane slope this is the wrap of the
+        // terrain-following periodicity, the air that slid down by
+        // z_s(west) - z_s(east) re-entering at the top of the step.
+        auto rock_export = [&](
+                Lbc_map<TF>& lbc_lo, Lbc_map<TF>& lbc_hi,
+                const std::string& name, const bool along_x,
+                const bool is_lo, const bool is_hi, const TF f_rock)
+        {
+            const int ngc = along_x ? gd.igc : gd.jgc;
+            const int nlbc_lo = ngc + 1 + ns;
+            const int nlbc_hi = ngc + ns;
+            const int nalong = along_x ? gd.jcells : gd.icells;
+            const int along_start = along_x ? gd.jstart : gd.istart;
+            const int along_end = along_x ? gd.jend : gd.iend;
+            const TF dl = along_x ? gd.dy : gd.dx;
+
+            auto index = [&](const int b, const int a, const int k, const int nlbc)
+            {
+                return along_x ? b + a*nlbc + k*nlbc*nalong : a + b*nalong + k*nalong*nlbc;
+            };
+            auto zs_cell = [&](const int b, const int a, const bool hi)
+            {
+                const int n = hi ? (along_x ? gd.iend : gd.jend) - ns + b : b;
+                return along_x ? zs_local(n, a) : zs_local(a, n);
+            };
+
+            // [0] rock area lo, [1] rock area hi (mass weighted).
+            TF acc[2] = {TF(0), TF(0)};
+            if (is_lo)
+                for (int k=gd.kstart; k<gd.kend; ++k)
+                    for (int a=along_start; a<along_end; ++a)
+                        if (gd.z[k] <= zs_cell(ngc, a, false))
+                            acc[0] += fields.rhoref[k] * dl * gd.dz[k];
+            if (is_hi)
+                for (int k=gd.kstart; k<gd.kend; ++k)
+                    for (int a=along_start; a<along_end; ++a)
+                        if (gd.z[k] <= zs_cell(ns, a, true))
+                            acc[1] += fields.rhoref[k] * dl * gd.dz[k];
+            master.sum(acc, 2);
+
+            // All of it through one face if the other has no rock.
+            if (acc[0] + acc[1] <= TF(0))
+                return;
+            const TF f_lo = (acc[1] <= TF(0)) ? f_rock : (acc[0] <= TF(0)) ? TF(0) : TF(0.5)*f_rock;
+            const TF f_hi = f_lo - f_rock;
+            const TF u_lo = (acc[0] > TF(0)) ? f_lo / acc[0] : TF(0);
+            const TF u_hi = (acc[1] > TF(0)) ? f_hi / acc[1] : TF(0);
+
+            // The face and the ghost faces outside it; the sponge cells
+            // inside keep the source values (the IB blanks them anyway).
+            if (is_lo)
+                for (int k=gd.kstart; k<gd.kend; ++k)
+                    for (int a=0; a<nalong; ++a)
+                        for (int b=0; b<=ngc; ++b)
+                            if (gd.z[k] <= zs_cell(ngc, a, false))
+                                lbc_lo.at(name)[index(b, a, k, nlbc_lo)] = u_lo;
+            if (is_hi)
+                for (int k=gd.kstart; k<gd.kend; ++k)
+                    for (int a=0; a<nalong; ++a)
+                        for (int b=ns; b<nlbc_hi; ++b)
+                            if (gd.z[k] <= zs_cell(ns, a, true))
+                                lbc_hi.at(name)[index(b, a, k, nlbc_hi)] = u_hi;
+
+            if (!rock_export_reported)
+                master.print_message(
+                        "LBC: sw_lbc_tf_periodic - terrain mass flux %.4g kg/s let "
+                        "out of the rock through the %s edges (%.3g / %.3g m/s)\n",
+                        double(f_rock), along_x ? "x" : "y", double(u_lo), double(u_hi));
+        };
+
+        // Also with a zero flux: the copied source values in the terrain
+        // part of the faces would otherwise enter the balance of the air.
+        if (sw_lbc_rock_export)
+        {
+            rock_export(lbc_w, lbc_e, "u", true,  md.mpicoordx == 0, md.mpicoordx == md.npx-1, rock_flux[0]);
+            rock_export(lbc_s, lbc_n, "v", false, md.mpicoordy == 0, md.mpicoordy == md.npy-1, rock_flux[1]);
+            rock_export_reported = true;
+        }
+
+        balance(lbc_w, lbc_e, "u", true, md.mpicoordx == 0, md.mpicoordx == md.npx-1);
+        balance(lbc_s, lbc_n, "v", false, md.mpicoordy == 0, md.mpicoordy == md.npy-1);
+
+        std::fill(w_top_2d.begin(), w_top_2d.end(), TF(0));
+    }
+}
 
 #ifdef FLOAT_SINGLE
 template class Boundary_lateral<float>;
