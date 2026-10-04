@@ -277,6 +277,9 @@ void Model<TF>::load()
 
     ib->create(*input_nc);
     pres->set_rhs_zero_cells(ib->get_terrain_cells());
+    // apply_basestate_air.py: an updated base state from the air cells only.
+    if (ib->get_switch() != IB_type::Disabled)
+        thermo->set_basestate_air_levels(ib->get_k_dem());
     ib->load(timeloop->get_iotime());   // apply_ib_seb.py: prognostic surface state
     ib->create_column(*column);
     buffer->create(*input, *input_nc, *stats, *timeloop);
@@ -471,6 +474,9 @@ void Model<TF>::exec()
 
                 // Set the immersed boundary conditions for scalars.
                 ib->exec_scalars();
+                // apply_lbc_ib_halos.py: exec_scalars wrapped the halo
+                // periodically; put the open-boundary values back.
+                lbc->set_ghost_cells_scalars();
 
                 // Update the outflow boundary conditions in case IB is used.
                 if (ib->get_switch() != IB_type::Disabled)
@@ -539,6 +545,10 @@ void Model<TF>::exec()
                 // PALM does the same after its FFT pressure solve.
                 ib->exec_impermeable();
 
+                // Keep the inside of the terrain at its blanked value
+                // through the RK update ([IB] sw_blank_solid_tend).
+                ib->exec_blank_solid_tend();
+
                 // Apply the limiter as the last tendency.
                 limiter->exec(timeloop->get_sub_time_step(), *stats);
                 check("limiter");
@@ -553,6 +563,11 @@ void Model<TF>::exec()
                 // Allow only for statistics when not in substep and not directly after restart.
                 if (timeloop->is_stats_step())
                 {
+                    // [IB] tavg_interval: time statistics on terrain-following
+                    // planes, sampled every full step (apply_ib_tavg.py).
+                    ib->exec_tavg(*cross, timeloop->get_time(), timeloop->get_dt(),
+                                  timeloop->get_iotime());
+
                     const int iter = timeloop->get_iteration();
                     const double time = timeloop->get_time();
                     const unsigned long itime = timeloop->get_itime();

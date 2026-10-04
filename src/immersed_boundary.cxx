@@ -927,6 +927,59 @@ namespace
             at[ijk] += tau / wda[m];
         }
     }
+    // apply_ib_flux_bc.py. [IB] sbcbot=flux: L and u* from the surface
+    // buoyancy flux B, with the tangential speed wall_similarity_kernel
+    // left in utan, the same clip of z/L as there. The Dirichlet L the
+    // kernel found is the first guess of the iteration.
+    template<typename TF>
+    void wall_obuk_flux_kernel(
+            std::vector<TF>& ustar, std::vector<TF>& obuk,
+            const std::vector<TF>& utan, const std::vector<TF>& bflux,
+            const std::vector<int>& waxis, const std::vector<TF>& wdn,
+            const std::vector<TF>& wz0m, const bool sw_stab_vertical,
+            int& n_zl_clamped, const int n)
+    {
+        for (int m=0; m<n; ++m)
+        {
+            if (!(waxis[m] == 2 || sw_stab_vertical))
+                continue;
+            const TF zsl = wdn[m];
+            TF L = bsk::calc_obuk_noslip_flux_iterative(
+                    obuk[m], utan[m], bflux[m], zsl, wz0m[m]);
+            const TF zeta_raw = zsl / L;
+            const TF zeta = std::min(std::max(zeta_raw, Constants::zL_min<TF>),
+                                     Constants::zL_max<TF>);
+            if (zeta != zeta_raw)
+                ++n_zl_clamped;
+            L = zsl / zeta;
+            obuk[m]  = L;
+            ustar[m] = utan[m] * most::fm(zsl, wz0m[m], L);
+        }
+    }
+
+    // apply_ib_flux_bc.py. [IB] sbcbot=flux: on every face that carries a
+    // flux (floors, and risers with sw_scalar_flux_vertical), replace the
+    // MOST flux wall_scalar_flux_kernel added by the prescribed one, so the
+    // air cell gets -undo + F/da.
+    template<typename TF>
+    void wall_flux_presc_kernel(
+            TF* const restrict at, std::vector<TF>& flux_out,
+            const std::vector<TF>& flux_presc,
+            const std::vector<int>& waxis, const std::vector<int>& wi,
+            const std::vector<int>& wj, const std::vector<int>& wk,
+            const std::vector<TF>& wda, const bool sw_vert,
+            const int n, const int icells, const int ijcells)
+    {
+        for (int m=0; m<n; ++m)
+        {
+            if (waxis[m] != 2 && !sw_vert)
+                continue;
+            const int ijk = wi[m] + wj[m]*icells + wk[m]*ijcells;
+            at[ijk] += (flux_presc[m] - flux_out[m]) / wda[m];
+            flux_out[m] = flux_presc[m];
+        }
+    }
+
     template<typename TF>
     void wall_scalar_flux_kernel(
             TF* const restrict at,
@@ -947,7 +1000,8 @@ namespace
             const TF tPr_i, const TF visc,
             TF& ch_min, TF& ch_max, TF& src_max, TF& undo_max, int& n_bad,
             const bool sw_vert, const bool undo_only,
-            const int n, const int icells, const int ijcells)
+            const int n, const int icells, const int ijcells,
+            const std::vector<TF>* const a_face = nullptr)   // apply_ib_wall_sample.py
     {
         const int ii = 1;
         const int jj = icells;
@@ -1013,7 +1067,8 @@ namespace
 
             const TF fh = most::fh(wdn[m], wz0h[m], obuk[m]);
             const TF ch = ustar[m] * fh;
-            const TF F  = ch * (phi_wall[m] - a[ijk]);
+            const TF a1 = a_face ? (*a_face)[m] : a[ijk];
+            const TF F  = ch * (phi_wall[m] - a1);
 
             if (!std::isfinite(F) || !std::isfinite(undo))
             {
@@ -1501,6 +1556,22 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
                 "IB", "sw_strain_mlen", "", true);
         cs_ib = inputin.get_item<TF>("diff", "cs", "", TF(0.23));
         sw_mason_ib = inputin.get_item<bool>("diff", "swmason", "", true);
+
+        // [IB] sw_mason_wall - apply_ib_mason_wall.py. Diff_smag2 applies
+        // Mason with n = 2 when thermo is on and with n = 1 without
+        // (calc_evisc / calc_evisc_neutral), and calc_evisc_anisotropic
+        // always (n = 2, swmason is not read there).
+        sw_mason_wall = inputin.get_item<bool>("IB", "sw_mason_wall", "", false);
+        {
+            const std::string swthermo_m = inputin.get_item<std::string>(
+                    "thermo", "swthermo", "", "0");
+            const bool aniso_m = inputin.get_item<bool>(
+                    "diff", "swanisotropic", "", false);
+            mason_n = (aniso_m || swthermo_m != "0") ? TF(2) : TF(1);
+            mason_mlen0_h = aniso_m ? inputin.get_item<TF>("diff", "mlen0_h", "") : TF(0);
+            mason_mlen0_v = aniso_m ? inputin.get_item<TF>("diff", "mlen0_v", "") : TF(0);
+            mason_z0_floor = inputin.get_item<TF>("boundary", "z0m", "", TF(0));
+        }
         strain_most_min = inputin.get_item<TF>(
                 "IB", "strain_most_min", "", TF(0.05));
         strain_most_reported = false;
@@ -1559,6 +1630,12 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         // floor face (wall-normal distance, tangential wind, area factor).
         sw_wall_slope = inputin.get_item<bool>("IB", "sw_wall_slope", "", false);
         wall_dn_min = inputin.get_item<TF>("IB", "wall_dn_min", "", TF(0.1));
+
+        // apply_ib_wall_sample.py: sample the wall model's input at
+        // wall_sample_dz * dz along the surface normal (floor faces).
+        sw_wall_sample = inputin.get_item<bool>("IB", "sw_wall_sample", "", false);
+        wall_sample_dz = inputin.get_item<TF>("IB", "wall_sample_dz", "", TF(1.5));
+        wall_sample_reported = false;
         if (sw_wall_slope && (sw_scalar_flux_vertical || sw_momentum_flux_vertical))
         {
             // The floor faces now carry the whole sloping surface, area
@@ -1680,6 +1757,184 @@ std::vector<std::string> Immersed_boundary<TF>::sgs_k_fields()
 }
 
 template<typename TF>
+void Immersed_boundary<TF>::sample_wall(const TF* const restrict b, const std::vector<TF>& b_wall)
+{
+    /* apply_ib_wall_sample.py. For every floor face the wall model's input
+       is taken at an image point a fixed distance d_s along the surface
+       normal, d_s = max(wall_sample_dz * dz, dn), by trilinear interpolation
+       of the resolved fields (as the velocity-reconstruction IBM of Senocak
+       et al. 2004 / Bao et al. 2018 does). The first air cell's centre lies
+       anywhere from 0 to dz above a staircase surface and is sheltered by
+       the risers; the image point is at the same height above the slope
+       everywhere. Interpolation corners inside the terrain get weight zero;
+       with less than half the weight left the face keeps its first cell. */
+    auto& gd = grid.get_grid_data();
+    const int ii = 1;
+    const int jj = gd.icells;
+    const int kk = gd.ijcells;
+
+    if (wall_dn_s.size() != size_t(wall.n))
+    {
+        wall_dn_s.assign(wall.n, TF(0));
+        wall_du_s.assign(wall.n, TF(0));
+        wall_u_s .assign(wall.n, TF(0));
+        wall_v_s .assign(wall.n, TF(0));
+        wall_db_s.assign(wall.n, TF(0));
+        wall_obuk_s.assign(wall.n, TF(-1));
+        wall_samp_ok.assign(wall.n, 0);
+        for (auto& it : fields.sp)
+            if (it.first != "sgstke")
+                wall_s_s[it.first].assign(wall.n, TF(0));
+    }
+
+    const TF* const restrict u = fields.mp.at("u")->fld.data();
+    const TF* const restrict v = fields.mp.at("v")->fld.data();
+    const TF* const restrict w = fields.mp.at("w")->fld.data();
+
+    // Trilinear interpolation of fld (on the grid x0 + i*dx, y0 + j*dy, zax)
+    // at (px, py, pz); corners for which air(i, j, k) is false are dropped.
+    auto interp = [&](const TF* const restrict fld, const TF px, const TF py, const TF pz,
+                      const TF x0, const TF y0, const std::vector<TF>& zax,
+                      int kstart_search, auto air, TF& out) -> bool
+    {
+        const TF fx = (px - x0)/gd.dx;
+        const TF fy = (py - y0)/gd.dy;
+        const int i0 = int(std::floor(fx));
+        const int j0 = int(std::floor(fy));
+        const TF ax = fx - i0;
+        const TF ay = fy - j0;
+        int k0 = std::max(kstart_search, gd.kstart);
+        while (k0+1 < gd.kend && zax[k0+1] <= pz)
+            ++k0;
+        const int k1 = std::min(k0+1, gd.kend-1);
+        TF az = (k1 > k0) ? (pz - zax[k0])/(zax[k1] - zax[k0]) : TF(0);
+        az = std::min(std::max(az, TF(0)), TF(1));
+        if (i0 < 0 || j0 < 0 || i0+1 >= gd.icells || j0+1 >= gd.jcells)
+            return false;
+
+        TF sum = TF(0), wsum = TF(0);
+        for (int c=0; c<8; ++c)
+        {
+            const int di = c & 1, dj = (c >> 1) & 1, dk = (c >> 2) & 1;
+            const int ic = i0 + di, jc = j0 + dj, kc = dk ? k1 : k0;
+            if (!air(ic, jc, kc))
+                continue;
+            const TF wgt = (di ? ax : TF(1)-ax) * (dj ? ay : TF(1)-ay) * (dk ? az : TF(1)-az);
+            sum  += wgt * fld[ic + jc*jj + kc*kk];
+            wsum += wgt;
+        }
+        if (wsum < TF(0.5))
+            return false;
+        out = sum / wsum;
+        return true;
+    };
+
+    auto air_s = [&](const int i, const int j, const int k)
+    { return gd.z[k] > dem[i + j*jj]; };
+    auto air_u = [&](const int i, const int j, const int k)
+    { return gd.z[k] > std::max(dem[i + j*jj], dem[i-1 + j*jj]); };
+    auto air_v = [&](const int i, const int j, const int k)
+    { return gd.z[k] > std::max(dem[i + j*jj], dem[i + (j-1)*jj]); };
+    auto air_w = [&](const int i, const int j, const int k)
+    { return gd.zh[k] > dem[i + j*jj]; };
+    // b comes from Thermo::get_thermo_field("b"), interior only: its halo
+    // is not set, so corners outside the interior are dropped as well.
+    auto air_b = [&](const int i, const int j, const int k)
+    { return i >= gd.istart && i < gd.iend && j >= gd.jstart && j < gd.jend
+             && gd.z[k] > dem[i + j*jj]; };
+
+    const bool have_n = (wall.nx.size() == size_t(wall.n));
+    int n_ok = 0, n_floor = 0;
+    TF d_lo = TF(1e30), d_hi = TF(-1e30);
+
+    for (int m=0; m<wall.n; ++m)
+    {
+        const int i = wall.i[m];
+        const int j = wall.j[m];
+        const int k = wall.k[m];
+        const int ij  = i + j*jj;
+        const int ijk = ij + k*kk;
+
+        // defaults: the first cell (risers, fallbacks)
+        wall_samp_ok[m] = 0;
+        wall_dn_s[m] = wall.dn[m];
+        wall_u_s[m]  = TF(0.5)*(u[ijk] + u[ijk+ii]);
+        wall_v_s[m]  = TF(0.5)*(v[ijk] + v[ijk+jj]);
+        wall_du_s[m] = wall.utan[m];
+        wall_db_s[m] = b ? b[ijk] - b_wall[m] : TF(0);
+        for (auto& it : wall_s_s)
+            it.second[m] = fields.sp.at(it.first)->fld[ijk];
+
+        if (wall.axis[m] != 2)
+            continue;
+        ++n_floor;
+
+        const TF nx = (have_n && sw_wall_slope) ? wall.nx[m] : TF(0);
+        const TF ny = (have_n && sw_wall_slope) ? wall.ny[m] : TF(0);
+        const TF nz = (have_n && sw_wall_slope) ? wall.nz[m] : TF(1);
+        const TF ds = std::max(wall_sample_dz*gd.dz[k], wall.dn[m]);
+        const TF px = gd.x[i] + ds*nx;
+        const TF py = gd.y[j] + ds*ny;
+        const TF pz = dem[ij] + ds*nz;
+
+        TF us, vs, ws, bs = TF(0);
+        bool ok = interp(u, px, py, pz, gd.xh[0], gd.y[0], gd.z, k, air_u, us)
+               && interp(v, px, py, pz, gd.x[0], gd.yh[0], gd.z, k, air_v, vs)
+               && interp(w, px, py, pz, gd.x[0], gd.y[0], gd.zh, k, air_w, ws);
+        if (ok && b)
+            ok = interp(b, px, py, pz, gd.x[0], gd.y[0], gd.z, k, air_b, bs);
+        std::map<std::string, TF> sv;
+        for (auto& it : wall_s_s)
+        {
+            if (!ok)
+                break;
+            TF val;
+            ok = interp(fields.sp.at(it.first)->fld.data(), px, py, pz,
+                        gd.x[0], gd.y[0], gd.z, k, air_s, val);
+            sv[it.first] = val;
+        }
+        if (!ok)
+            continue;
+
+        TF du;
+        if (sw_wall_slope && have_n)
+        {
+            const TF un = us*nx + vs*ny + ws*nz;
+            du = std::sqrt(std::max(us*us + vs*vs + ws*ws - un*un, TF(0)));
+        }
+        else
+            du = std::sqrt(us*us + vs*vs);
+
+        wall_samp_ok[m] = 1;
+        wall_dn_s[m] = ds;
+        wall_u_s[m]  = us;
+        wall_v_s[m]  = vs;
+        wall_du_s[m] = std::max(du, TF(Constants::dsmall));
+        if (b)
+            wall_db_s[m] = bs - b_wall[m];
+        for (auto& it : sv)
+            wall_s_s.at(it.first)[m] = it.second;
+        ++n_ok;
+        d_lo = std::min(d_lo, ds);
+        d_hi = std::max(d_hi, ds);
+    }
+
+    if (!wall_sample_reported)
+    {
+        wall_sample_reported = true;
+        master.sum(&n_ok, 1);
+        master.sum(&n_floor, 1);
+        master.min(&d_lo, 1);
+        master.max(&d_hi, 1);
+        master.print_message(
+                "IB: sw_wall_sample ON - u*, L and the scalar fluxes from an image "
+                "point %.3g .. %.3g m along the surface normal (wall_sample_dz = %g); "
+                "%d of %d floor faces sampled, the rest keep their first cell\n",
+                double(d_lo), double(d_hi), double(wall_sample_dz), n_ok, n_floor);
+    }
+}
+
+template<typename TF>
 void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats)
 {
     // apply_ib_column_guard.py. create_column is called from src/model.cxx
@@ -1749,6 +2004,28 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
             const TF thv_w = thl_w * (TF(1) + TF(0.61) * qt_w);
             b_wall[m] = Constants::grav<TF> * (thv_w - thvref[k]) / thvref[k];
         }
+
+        // apply_ib_flux_bc.py: the surface buoyancy flux of the prescribed
+        // thl and qt fluxes, B = g/thv (F_thl (1 + 0.61 qt) + 0.61 thl F_qt),
+        // with thl and qt of the first air cell.
+        if (sw_ib_flux)
+        {
+            bflux_wall.assign(wall.n, TF(0));
+            const TF* thl_a = has_thl ? fields.sp.at("thl")->fld.data() : nullptr;
+            const TF* qt_a  = has_qt  ? fields.sp.at("qt") ->fld.data() : nullptr;
+            for (int m=0; m<wall.n; ++m)
+            {
+                const int k   = wall.k[m];
+                const int ij  = wall.i[m] + wall.j[m]*gd.icells;
+                const int ijk = ij + k*gd.ijcells;
+                const TF f_thl = has_thl ? ib_flux_presc("thl", ij) : TF(0);
+                const TF f_qt  = has_qt  ? ib_flux_presc("qt",  ij) : TF(0);
+                const TF thl1  = has_thl ? thl_a[ijk] : thvref[k];
+                const TF qt1   = has_qt  ? qt_a[ijk]  : TF(0);
+                bflux_wall[m] = Constants::grav<TF> / thvref[k]
+                              * (f_thl * (TF(1) + TF(0.61) * qt1) + TF(0.61) * thl1 * f_qt);
+            }
+        }
     }
 
     // nullptr is safe: the kernel only dereferences b when sw_stability.
@@ -1814,8 +2091,60 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
             wall.n, gd.icells, gd.ijcells);
     n_zl_clamped_last = n_zl_clamped;
 
+    // apply_ib_wall_sample.py: u* and L from the image point instead. The
+    // first-cell pass above is kept for wall.utan (the ghost-cell blend
+    // describes the first cell) and for every face without a usable image.
+    if (sw_wall_sample)
+    {
+        sample_wall(b_ptr, b_wall);
+        int n_cl = 0;
+        for (int m=0; m<wall.n; ++m)
+        {
+            if (!wall_samp_ok[m])
+                continue;
+            const TF zsl = wall_dn_s[m];
+            const TF du  = wall_du_s[m];
+            TF L;
+            if (sw_stability)
+                L = bsk::calc_obuk_noslip_dirichlet_iterative(
+                        wall_obuk_s[m], du, wall_db_s[m], zsl, wall.z0m[m], wall.z0h[m]);
+            else
+                L = TF(Constants::dbig);
+            const TF zeta_raw = zsl / L;
+            const TF zeta = std::min(std::max(zeta_raw, Constants::zL_min<TF>),
+                                     Constants::zL_max<TF>);
+            if (zeta != zeta_raw)
+                ++n_cl;
+            L = zsl / zeta;
+            wall_obuk_s[m] = L;
+            wall.obuk[m]   = L;
+            wall.ustar[m]  = du * most::fm(zsl, wall.z0m[m], L);
+        }
+        n_zl_clamped_last = n_cl;
+    }
+
     if (sw_stability)
         fields.release_tmp(buoy);
+
+    // apply_ib_flux_bc.py: with a prescribed flux, L and u* follow from the
+    // surface buoyancy flux, not from the wall value; then the surface value
+    // that goes with the flux, for the ghost cells, the blanked terrain and
+    // the diagnostics.
+    if (sw_ib_flux)
+    {
+        if (sw_stability)
+        {
+            int n_clamped_flux = 0;
+            wall_obuk_flux_kernel<TF>(
+                    wall.ustar, wall.obuk,
+                    sw_wall_sample ? wall_du_s : wall.utan,   // apply_ib_wall_sample.py
+                    bflux_wall,
+                    wall.axis, wall_dn_flux(), wall.z0m, sw_wall_stability_vertical,
+                    n_clamped_flux, wall.n);
+            n_zl_clamped_last = n_clamped_flux;
+        }
+        ib_flux_to_sbot();
+    }
 
     // The wall-normal K the operator used (apply_ib_sgs_generic.py).
     std::shared_ptr<Field3d<TF>> evisc_tmp;
@@ -1857,6 +2186,81 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
 
 #ifndef USECUDA
 template<typename TF>
+TF Immersed_boundary<TF>::ib_flux_presc(const std::string& name, const int ij) const
+{
+    // apply_ib_flux_bc.py: the prescribed kinematic flux of a column.
+    auto it = flux_2d.find(name);
+    return (it != flux_2d.end()) ? it->second[ij] : sbc.at(name);
+}
+
+template<typename TF>
+void Immersed_boundary<TF>::ib_flux_to_sbot()
+{
+    /* apply_ib_flux_bc.py. With sbcbot=flux the surface value is not given.
+       Diagnose it from the flux and the exchange coefficient of the floor
+       face, phi_s = phi_1 + F / (u* f_h), as the inverse of the flux the
+       Dirichlet path would apply, and put it where the wall value goes:
+       ghost cells, blanked terrain, thl_sbot_ib and the 2-m diagnostics.
+       The flux itself does not depend on it. |phi_s - phi_1| is capped at
+       [IB] flux_ds_max where u* f_h collapses (very stable). */
+    auto& gd = grid.get_grid_data();
+    int n_cap = 0;
+    TF d_lo = TF(1e30), d_hi = TF(-1e30);
+
+    for (auto& sp : fields.sp)
+    {
+        const std::string& name = sp.first;
+        if (name == "sgstke")
+            continue;
+        std::vector<TF>& s2 = sbot_2d.at(name);
+        const TF* const fld = sp.second->fld.data();
+        const bool use_z0q = (name == "qt" && wall.z0q.size() == wall.z0h.size());
+
+        for (int m=0; m<wall.n; ++m)
+        {
+            if (wall.axis[m] != 2)
+                continue;
+            const int ij  = wall.i[m] + wall.j[m]*gd.icells;
+            const int ijk = ij + wall.k[m]*gd.ijcells;
+            const TF z0s = use_z0q ? wall.z0q[m] : wall.z0h[m];
+            const TF ch  = wall.ustar[m] * most::fh(wall_dn_flux()[m], z0s, wall.obuk[m]);
+            TF d = (ch > TF(0) && std::isfinite(ch))
+                 ? ib_flux_presc(name, ij) / ch : TF(0);
+            if (std::abs(d) > flux_ds_max)
+            {
+                d = std::copysign(flux_ds_max, d);
+                ++n_cap;
+            }
+            if (name == "thl")
+            {
+                d_lo = std::min(d_lo, d);
+                d_hi = std::max(d_hi, d);
+            }
+            // apply_ib_wall_sample.py: relative to the value the flux used
+            const bool samp = sw_wall_sample && wall_s_s.count(name);
+            s2[ij] = (samp ? wall_s_s.at(name)[m] : fld[ijk]) + d;
+        }
+        boundary_cyclic.exec_2d(s2.data());
+    }
+    sbot_2d_to_ghosts();
+
+    if (!flux_reported)
+    {
+        master.sum(&n_cap, 1);
+        master.min(&d_lo, 1);
+        master.max(&d_hi, 1);
+        if (d_lo <= d_hi)
+            master.print_message(
+                    "IB: sbcbot=flux - diagnosed thl_s - thl_1 = %.3g .. %.3g K on the "
+                    "floor faces, %d value(s) capped at flux_ds_max = %g\n",
+                    double(d_lo), double(d_hi), n_cap, double(flux_ds_max));
+        flux_reported = true;
+    }
+}
+#endif
+
+#ifndef USECUDA
+template<typename TF>
 void Immersed_boundary<TF>::sbot_2d_to_ghosts()
 {
     if (fields.sp.size() == 0)
@@ -1891,7 +2295,11 @@ void Immersed_boundary<TF>::update_time_dependent(Timeloop<TF>& timeloop)
     seb_dt = timeloop.get_dt();
     seb_substep = timeloop.get_substep();
 
-    if (sw_ib == IB_type::Disabled || !sw_timedep_sbot || sbot_2d.empty())
+    // apply_ib_flux_bc.py: with sbcbot=flux the files are fluxes, and
+    // sbot_2d is the diagnosed surface value.
+    std::map<std::string, std::vector<TF>>& sbot_tdep = sw_ib_flux ? flux_2d : sbot_2d;
+
+    if (sw_ib == IB_type::Disabled || !sw_timedep_sbot || sbot_tdep.empty())
         return;
 
     auto& gd = grid.get_grid_data();
@@ -1928,7 +2336,7 @@ void Immersed_boundary<TF>::update_time_dependent(Timeloop<TF>& timeloop)
         itime_sbot_prev = itime / iloadtime_sbot * iloadtime_sbot;
         itime_sbot_next = itime_sbot_prev + iloadtime_sbot;
 
-        for (auto& it : sbot_2d)
+        for (auto& it : sbot_tdep)
         {
             sbot_2d_prev.emplace(it.first, std::vector<TF>(gd.ijcells, TF(0)));
             sbot_2d_next.emplace(it.first, std::vector<TF>(gd.ijcells, TF(0)));
@@ -1948,7 +2356,7 @@ void Immersed_boundary<TF>::update_time_dependent(Timeloop<TF>& timeloop)
         itime_sbot_prev = itime_sbot_next;
         itime_sbot_next = itime_sbot_prev + iloadtime_sbot;
 
-        for (auto& it : sbot_2d)
+        for (auto& it : sbot_tdep)
         {
             sbot_2d_prev.at(it.first) = sbot_2d_next.at(it.first);
             load_2d(sbot_2d_next.at(it.first), it.first, itime_sbot_next);
@@ -1968,7 +2376,7 @@ void Immersed_boundary<TF>::update_time_dependent(Timeloop<TF>& timeloop)
                 / TF(itime_sbot_next - itime_sbot_prev);
     const TF f0 = TF(1) - f1;
 
-    for (auto& it : sbot_2d)
+    for (auto& it : sbot_tdep)
     {
         std::vector<TF>& sb = it.second;
         const std::vector<TF>& p = sbot_2d_prev.at(it.first);
@@ -1978,7 +2386,8 @@ void Immersed_boundary<TF>::update_time_dependent(Timeloop<TF>& timeloop)
             sb[n] = f0 * p[n] + f1 * q[n];
     }
 
-    sbot_2d_to_ghosts();
+    if (!sw_ib_flux)
+        sbot_2d_to_ghosts();
 }
 #endif
 
@@ -2022,7 +2431,7 @@ void Immersed_boundary<TF>::exec_vegetation(
             veg_gD.data(),
             veg_f2.data(), veg_f2b.data(),
             pref.data(), exnref.data(),
-            wall_floor_ij, wall.k, wall.dn, wall.z0q,   // z0q: apply_ib_z0_map.py
+            wall_floor_ij, wall.k, wall_dn_flux(), wall.z0q,   // z0q: apply_ib_z0_map.py; dn: apply_ib_wall_sample.py
             wall.ustar, wall.obuk,
             gd.istart, gd.iend, gd.jstart, gd.jend,
             gd.icells, gd.ijcells);
@@ -2374,8 +2783,10 @@ void Immersed_boundary<TF>::exec_seb(Thermo<TF>& thermo, Radiation<TF>& radiatio
 
             // The air at the first fluid cell, as the wall flux sees it:
             // H = rho cp exner (thl_s - thl_a) = rho cp (Ts - exner thl_a).
-            const TF t_a = thl[ijk] * exn[k];
-            const TF q_a = qt[ijk];
+            // apply_ib_wall_sample.py: the air the flux uses
+            const bool samp = sw_wall_sample && wall_samp_ok[m];
+            const TF t_a = (samp ? wall_s_s.at("thl")[m] : thl[ijk]) * exn[k];
+            const TF q_a = samp ? wall_s_s.at("qt")[m] : qt[ijk];
             const TF rho = fields.rhoref[k];
 
             const TF t0  = seb_tskin[ij];
@@ -2386,7 +2797,7 @@ void Immersed_boundary<TF>::exec_seb(Thermo<TF>& thermo, Radiation<TF>& radiatio
             // through ra with z0h: the two the wall faces use below.
             const TF ra = std::max(TF(Constants::dsmall), veg_ra[ij]);
             const TF ra_h = TF(1) / std::max(TF(Constants::dsmall),
-                    wall.ustar[m] * Monin_obukhov::fh(wall.dn[m], wall.z0h[m], wall.obuk[m]));
+                    wall.ustar[m] * Monin_obukhov::fh(wall_dn_flux()[m], wall.z0h[m], wall.obuk[m]));
             const TF cv = std::min(TF(1), std::max(TF(0), veg_c_veg[ij]));
             const TF g = (is_water || qs0 < q_a)
                        ? TF(1) / ra
@@ -2604,6 +3015,15 @@ void Immersed_boundary<TF>::exec_scalar_flux(
         TF k_fac;
         get_sgs_k(name, k_h, k_v, k_fac, evisc_tmp);
 
+        // apply_ib_flux_bc.py: the prescribed flux of this face's column.
+        if (sw_ib_flux)
+        {
+            wall_flux_presc_face.resize(wall.n);
+            for (int m=0; m<wall.n; ++m)
+                wall_flux_presc_face[m] = ib_flux_presc(
+                        name, wall.i[m] + wall.j[m]*gd.icells);
+        }
+
         wall_scalar_flux_kernel<TF>(
                 fields.st.at(name)->fld.data(),
                 wall_flux.at(name),
@@ -2611,7 +3031,7 @@ void Immersed_boundary<TF>::exec_scalar_flux(
                 k_h, k_v,
                 pw,
                 wall.i, wall.j, wall.k, wall.axis, wall.sign,
-                wall.dn, wall.da,
+                wall_dn_flux(), wall.da,                // apply_ib_wall_sample.py
                 (name == "qt" ? wall.z0q : wall.z0h),   // apply_ib_z0_map.py
                 wall.ustar, wall.obuk,
                 gd.dzi.data(), gd.dzhi.data(),
@@ -2620,7 +3040,18 @@ void Immersed_boundary<TF>::exec_scalar_flux(
                 k_fac, it.second->visc,
                 ch_min, ch_max, src_max, undo_max, n_bad,
                 sw_scalar_flux_vertical, name == "sgstke",
-                wall.n, gd.icells, gd.ijcells);
+                wall.n, gd.icells, gd.ijcells,
+                (sw_wall_sample && wall_s_s.count(name)) ? &wall_s_s.at(name) : nullptr);
+
+        // apply_ib_flux_bc.py: replace the MOST flux of the faces that
+        // carry one by the prescribed flux (the kernel above is the
+        // Dirichlet one, untouched).
+        if (sw_ib_flux && name != "sgstke")
+            wall_flux_presc_kernel<TF>(
+                    fields.st.at(name)->fld.data(), wall_flux.at(name),
+                    wall_flux_presc_face, wall.axis, wall.i, wall.j, wall.k,
+                    wall.da, sw_scalar_flux_vertical,
+                    wall.n, gd.icells, gd.ijcells);
     }
 
 
@@ -2809,6 +3240,22 @@ void Immersed_boundary<TF>::exec_momentum()
     boundary_cyclic.exec(fields.mp.at("v")->fld.data());
     boundary_cyclic.exec(fields.mp.at("w")->fld.data());
 
+    // [IB] sw_blank_solid_tend (apply_ib_blank_solid_tend.py): the ghost
+    // values are boundary conditions, so drop the tendencies the physics
+    // put there (buoyancy from the extrapolated ghost scalars in
+    // particular) before the pressure solve sees them. The ghost faces
+    // of the air cells still get the pressure correction.
+    if (sw_blank_solid_tend)
+    {
+        for (const std::string name : {"u", "v", "w"})
+        {
+            TF* const restrict tend = fields.mt.at(name)->fld.data();
+            const Ghost_cells<TF>& gh = ghost.at(name);
+            for (std::size_t n=0; n<gh.i.size(); ++n)
+                tend[gh.i[n] + gh.j[n]*gd.icells + gh.k[n]*gd.ijcells] = TF(0);
+        }
+    }
+
     blank_solid_momentum();
 
     if (sw_wall_kinematic)
@@ -2955,6 +3402,79 @@ void Immersed_boundary<TF>::exec_scalars()
 }
 
 template<typename TF>
+void Immersed_boundary<TF>::build_mason_wall()
+{
+    /* apply_ib_mason_wall.py. The factor that turns the closure's Mason
+       length, damped with the height above the DOMAIN FLOOR, into the same
+       length damped with the height above the LOCAL SURFACE:
+
+           f = (l(d) / l(z))^2,   l(x) = [1/l0^n + 1/(kappa (x + z0))^n]^(-1/n)
+
+       z the height above the floor with the floor's z0 ([boundary] z0m),
+       d = max(z - dem, dz/2) with the IB z0m (map), l0 and n as Diff_smag2 uses them:
+       cs (dx dy dz)^(1/3) for smag2, cs mlen0_h and cs mlen0_v for
+       swanisotropic. The geometry is static, so f is built once. Cells
+       inside the terrain keep f = 1 (the cap of patch 26 handles them). */
+    auto& gd = grid.get_grid_data();
+    const TF kappa = Constants::kappa<TF>;
+    const TF n = mason_n;
+
+    auto l_mason = [&](const TF l0, const TF x, const TF z0)
+    {
+        return std::pow(TF(1)/(TF(1)/std::pow(l0, n)
+                               + TF(1)/std::pow(kappa*(x + z0), n)), TF(1)/n);
+    };
+
+    mason_f_h.assign(gd.ncells, TF(1));
+    if (sgs_kind == 1)
+        mason_f_v.assign(gd.ncells, TF(1));
+
+    TF fmin_h = TF(1), fmin_v = TF(1);
+    for (int k=gd.kstart; k<gd.kend; ++k)
+    {
+        const TF l0_h = (sgs_kind == 1) ? cs_ib*mason_mlen0_h
+                      : cs_ib*std::cbrt(gd.dx*gd.dy*gd.dz[k]);
+        const TF l0_v = cs_ib*mason_mlen0_v;
+        for (int j=gd.jstart; j<gd.jend; ++j)
+            for (int i=gd.istart; i<gd.iend; ++i)
+            {
+                const int ij  = i + j*gd.icells;
+                const int ijk = ij + k*gd.ijcells;
+                if (gd.z[k] - dem[ij] <= TF(0))
+                    continue;
+                // At least half a cell: a first air cell whose centre is just
+                // above the DEM is still half air, and on a flat floor the
+                // first centre is dz/2 above the surface.
+                const TF d = std::max(gd.z[k] - dem[ij], TF(0.5)*gd.dz[k]);
+                const TF z0w = sw_z0m_map ? z0m_map[ij] : z0m_ib;
+                const TF fh = fm::pow2(l_mason(l0_h, d, z0w)
+                                       / l_mason(l0_h, gd.z[k], mason_z0_floor));
+                mason_f_h[ijk] = std::min(fh, TF(1));
+                fmin_h = std::min(fmin_h, mason_f_h[ijk]);
+                if (sgs_kind == 1)
+                {
+                    const TF fv = fm::pow2(l_mason(l0_v, d, z0w)
+                                           / l_mason(l0_v, gd.z[k], mason_z0_floor));
+                    mason_f_v[ijk] = std::min(fv, TF(1));
+                    fmin_v = std::min(fmin_v, mason_f_v[ijk]);
+                }
+            }
+    }
+    master.min(&fmin_h, 1);
+    master.min(&fmin_v, 1);
+    if (sgs_kind == 1)
+        master.print_message(
+                "IB: sw_mason_wall ON (swanisotropic, n = %g) - Mason damping with "
+                "the height above the local surface; smallest factor on evisc_h "
+                "%.3g, on evisc_v %.3g\n", double(n), fmin_h, fmin_v);
+    else
+        master.print_message(
+                "IB: sw_mason_wall ON (smag2, n = %g) - Mason damping with the "
+                "height above the local surface; smallest factor on evisc %.3g; "
+                "replaces sw_strain_mlen\n", double(n), fmin_h);
+}
+
+template<typename TF>
 void Immersed_boundary<TF>::exec_strain_most()
 {
     if (sw_ib == IB_type::Disabled)
@@ -3010,6 +3530,40 @@ void Immersed_boundary<TF>::exec_strain_most()
                 }
         if (!sw_strain_most)
             boundary_cyclic.exec(evisc);
+    }
+
+    // ---- apply_ib_mason_wall.py ---------------------------------------------
+    // Mason's damping with the height above the local surface. Only where
+    // the closure applies Mason at all: smag2 with swmason, swanisotropic
+    // always (upstream), never tke2.
+    const bool mason_active = sw_mason_wall
+            && ((sgs_kind == 0 && sw_mason_ib) || sgs_kind == 1);
+    if (mason_active)
+    {
+        if (mason_f_h.empty())
+            build_mason_wall();
+
+        auto scale = [&](const std::string& name, const std::vector<TF>& f)
+        {
+            TF* const restrict evisc = fields.sd.at(name)->fld.data();
+            for (int k=gd.kstart; k<gd.kend; ++k)
+                for (int j=gd.jstart; j<gd.jend; ++j)
+                    for (int i=gd.istart; i<gd.iend; ++i)
+                    {
+                        const int ijk = i + j*gd.icells + k*gd.ijcells;
+                        evisc[ijk] *= f[ijk];
+                    }
+            if (!sw_strain_most)
+                boundary_cyclic.exec(evisc);
+        };
+
+        if (sgs_kind == 1)
+        {
+            scale("evisc_h", mason_f_h);
+            scale("evisc_v", mason_f_v);
+        }
+        else
+            scale("evisc", mason_f_h);
     }
 
     if (!sw_strain_most)
@@ -3070,7 +3624,7 @@ void Immersed_boundary<TF>::exec_strain_most()
         // FLOOR. Replace that distance by the distance to the wall this cell
         // actually sits against. See apply_ib_wall_mlen.py. The expression is
         // smag2's isotropic length, so it is applied for that closure only.
-        if (sw_strain_mlen && sgs_kind == 0)
+        if (sw_strain_mlen && sgs_kind == 0 && !sw_mason_wall)
         {
             const int k = wall.k[m];
             const TF mlen0 = cs_ib * std::pow(gd.dx*gd.dy*gd.dz[k], TF(1./3.));
@@ -3269,6 +3823,50 @@ void Immersed_boundary<TF>::blank_solid_momentum()
     boundary_cyclic.exec(v);
     boundary_cyclic.exec(w);
 }
+
+template<typename TF>
+void Immersed_boundary<TF>::exec_blank_solid_tend()
+{
+    /* apply_ib_blank_solid_tend.py. blank_solid_* reset the inside of the
+       terrain at the START of the IB calls, but the RK update then adds
+       that substep's tendencies there (advection, diffusion, buoyancy,
+       pressure), so until the next reset the terrain holds non-physical
+       values: they enter the CFL and diffusion limits, the 2i5 momentum
+       stencils next to the wall and, with the TKE closure, a production
+       feedback (shear of the rock velocities -> sgstke -> evisc) that can
+       grow without bound. Zeroing the tendencies of the blanked cells
+       after the pressure solve keeps them at the blanked value through
+       the update. Ghost cells are not blanked, so the face velocities of
+       every air cell keep the pressure correction: the air stays exactly
+       divergence-free. */
+    if (sw_ib == IB_type::Disabled || !sw_blank_solid_tend)
+        return;
+
+    TF* const restrict ut = fields.mt.at("u")->fld.data();
+    TF* const restrict vt = fields.mt.at("v")->fld.data();
+    TF* const restrict wt = fields.mt.at("w")->fld.data();
+
+    for (std::size_t n=0; n<blank_u.size(); ++n)
+        ut[blank_u[n]] = TF(0);
+    for (std::size_t n=0; n<blank_v.size(); ++n)
+        vt[blank_v[n]] = TF(0);
+    for (std::size_t n=0; n<blank_w.size(); ++n)
+        wt[blank_w[n]] = TF(0);
+
+    for (auto& it : fields.st)
+    {
+        TF* const restrict st = it.second->fld.data();
+        for (std::size_t n=0; n<blank_s.size(); ++n)
+            st[blank_s[n]] = TF(0);
+    }
+}
+#else
+template<typename TF>
+void Immersed_boundary<TF>::exec_blank_solid_tend()
+{
+    if (sw_ib != IB_type::Disabled && sw_blank_solid_tend)
+        throw std::runtime_error("[IB] sw_blank_solid_tend is not implemented for GPU builds");
+}
 #endif
 
 template <typename TF>
@@ -3395,11 +3993,44 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                     "[IB] seb_lake_mld must be > 0 and seb_cs_land >= 0");
     }
 
+    // [IB] sbcbot=flux with the wall model - apply_ib_flux_bc.py. Upstream
+    // turns a flux into a ghost-cell gradient with the MOLECULAR viscosity,
+    // which has no meaning next to the wall model. Here the wall model
+    // takes the flux itself; the ghost cells get the MOST surface value.
+    if (fields.sp.size() > 0 && sbcbot == Boundary_type::Flux_type
+            && sw_wall_model != IB_wall_type::Disabled)
+    {
+        if (!sw_scalar_flux)
+            throw std::runtime_error(
+                    "[IB] sbcbot=flux with sw_wall_model needs sw_scalar_flux=true: "
+                    "the prescribed flux is applied as the wall source term");
+        if (sw_vegetation || sw_seb)
+            throw std::runtime_error(
+                    "[IB] sbcbot=flux cannot be combined with sw_vegetation or "
+                    "sw_seb: both compute a surface VALUE (q at the canopy, Ts)");
+        sw_ib_flux = true;
+        sbcbot = Boundary_type::Dirichlet_type;
+        flux_ds_max = inputin.get_item<TF>("IB", "flux_ds_max", "", TF(30));
+        master.print_message(
+                "IB: sbcbot=flux - [IB] sbot[] and <scalar>_sbot are kinematic "
+                "surface fluxes per unit surface area (positive upward); L "
+                "follows from them, the wall value is diagnosed from MOST "
+                "(apply_ib_flux_bc.py)\n");
+    }
+
     sw_blank_solid = inputin.get_item<bool>("IB", "sw_blank_solid", "", false);
+    // [IB] sw_blank_solid_tend - apply_ib_blank_solid_tend.py
+    sw_blank_solid_tend = inputin.get_item<bool>("IB", "sw_blank_solid_tend", "", false);
+    if (sw_blank_solid_tend && !sw_blank_solid)
+        throw std::runtime_error("[IB] sw_blank_solid_tend needs sw_blank_solid=true");
 
     // [IB] sw_advec_wall - apply_ib_advec_wall.py
     sw_advec_wall = inputin.get_item<bool>("IB", "sw_advec_wall", "", false);
     advec_wall_reported = false;
+
+    // [IB] sw_advec_wall_conserve - apply_ib_advec_wall_conserve.py
+    sw_advec_wall_conserve = inputin.get_item<bool>(
+            "IB", "sw_advec_wall_conserve", "", true);
     if (sw_advec_wall)
     {
         // The correction recomputes advec_2i5's face fluxes to replace them
@@ -3455,6 +4086,29 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
     sw_tf_cross = inputin.get_item<bool>("IB", "sw_tf_cross", "", false);
     tf_cross_heights = inputin.get_list<TF>(
             "IB", "tf_cross_heights", "", std::vector<TF>());
+
+    // Time statistics on terrain-following planes (apply_ib_tavg.py).
+    tavg_interval = inputin.get_item<TF>("IB", "tavg_interval", "", TF(0));
+    tavg_cm = inputin.get_item<TF>("IB", "tavg_cm", "", TF(0.12));
+    tavg_mlen0_v = inputin.get_item<TF>("diff", "mlen0_v", "", TF(-1));
+    tavg_heights = inputin.get_list<TF>("IB", "tavg_heights", "", tf_cross_heights);
+    tavg_time = 0.;
+    tavg_end = -1.;
+    if (tavg_interval > TF(0))
+    {
+        if (tavg_heights.empty())
+            throw std::runtime_error(
+                    "[IB] tavg_interval needs [IB] tavg_heights (or tf_cross_heights)");
+        if (!inputin.get_item<bool>("cross", "swcross", "", false))
+            throw std::runtime_error(
+                    "[IB] tavg_interval writes cross-sections: set [cross] swcross=1");
+        // The interval must end on a time the time loop lands on exactly.
+        const double cross_dt = inputin.get_item<double>("cross", "sampletime", "");
+        const double ratio = double(tavg_interval) / cross_dt;
+        if (std::abs(ratio - std::round(ratio)) > 1e-9 || ratio < 0.5)
+            throw std::runtime_error(
+                    "[IB] tavg_interval must be a multiple of [cross] sampletime");
+    }
 
 
     // ---- [IB] columnlist ---------------------------------------------------
@@ -3513,6 +4167,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                 const std::string var = it->substr(0, p_tf);
                 const bool known_var = (var == "u" || var == "v" || var == "w"
                         || var == "wspd" || var == "wdir"
+                        || var == "sgs_tke"         // apply_ib_tavg.py
                         || fields.sp.find(var) != fields.sp.end());
                 const bool have_h = (p_tf + 3 < it->size())
                         || !tf_cross_heights.empty();
@@ -4294,6 +4949,30 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                 wall_value_face.emplace(sp.first, std::vector<TF>(wall.n, TF(0)));
             }
 
+            // apply_ib_flux_bc.py: what was loaded into sbot_2d are fluxes.
+            // sbot_2d becomes the surface value, first the air value above
+            // (zero difference) until the wall model diagnoses it.
+            if (sw_ib_flux)
+            {
+                for (auto& sp : fields.sp)
+                {
+                    auto it2d = sbot_2d.find(sp.first);
+                    if (it2d != sbot_2d.end())
+                        flux_2d[sp.first] = it2d->second;
+
+                    std::vector<TF>& s2 = sbot_2d[sp.first];
+                    s2.assign(gd.ijcells, TF(0));
+                    const TF* fld = sp.second->fld.data();
+                    for (int ij=0; ij<gd.ijcells; ++ij)
+                    {
+                        const int k = std::min(std::max(int(k_dem[ij]), gd.kstart), gd.kend-1);
+                        s2[ij] = fld[ij + k*gd.ijcells];
+                    }
+                    boundary_cyclic.exec_2d(s2.data());
+                }
+                sbot_2d_to_ghosts();
+            }
+
 
             if (sw_momentum_flux)
             {
@@ -4888,7 +5567,7 @@ bool Immersed_boundary<TF>::calc_surface_diag(
                 val = (std::abs(wall.obuk[m]) > TF(0))
                     ? TF(1) / wall.obuk[m] : TF(0);
             else if (name == "ch_ib")    val = wall.ustar[m]
-                    * most::fh(wall.dn[m], wall.z0h[m], wall.obuk[m]);
+                    * most::fh(wall_dn_flux()[m], wall.z0h[m], wall.obuk[m]);
             else if (itv != wall_value_face.end()
                      && itv->second.size() == size_t(wall.n))
                 // The value the kernel actually used on THIS face. For a
@@ -4971,6 +5650,13 @@ bool Immersed_boundary<TF>::calc_surface_diag(
             const TF z1 = wall.dn[m];
             const TF L  = wall.obuk[m];
 
+            // apply_ib_wall_sample.py: the MOST extrapolations start from
+            // the image point the flux used, not from the first cell.
+            const bool samp = sw_wall_sample && !wall_samp_ok.empty() && wall_samp_ok[m];
+            const TF z1s = samp ? wall_dn_s[m] : z1;
+            const TF ucs = samp ? wall_u_s[m] : uc;
+            const TF vcs = samp ? wall_v_s[m] : vc;
+
             TF val = TF(0);
             if (name == "u_ib1")        val = uc;
             else if (name == "v_ib1")   val = vc;
@@ -4982,10 +5668,10 @@ bool Immersed_boundary<TF>::calc_surface_diag(
                      || name == "wspd_10m_ib" || name == "wdir_10m_ib")
             {
                 const TF zd = std::max(diag_z_mom, wall.z0m[m]*TF(1.001));
-                const TF r  = most::fm(z1, wall.z0m[m], L)
+                const TF r  = most::fm(z1s, wall.z0m[m], L)
                             / most::fm(zd, wall.z0m[m], L);
-                const TF ud = uc * r;
-                const TF vd = vc * r;
+                const TF ud = ucs * r;
+                const TF vd = vcs * r;
                 if (name == "u_10m_ib")         val = ud;
                 else if (name == "v_10m_ib")    val = vd;
                 else if (name == "wspd_10m_ib") val = std::sqrt(ud*ud + vd*vd);
@@ -5000,12 +5686,13 @@ bool Immersed_boundary<TF>::calc_surface_diag(
                 auto i2 = sbot_2d.find(s2);
                 const TF pw = (i2 != sbot_2d.end()) ? i2->second[ij]
                             : (sbc.count(s2) ? sbc.at(s2) : TF(0));
-                const TF p1 = fields.sp.at(s2)->fld[ijk];
+                const TF p1 = (samp && wall_s_s.count(s2)) ? wall_s_s.at(s2)[m]
+                            : fields.sp.at(s2)->fld[ijk];
                 // qt with z0q, thl with z0h (apply_ib_z0_map.py)
                 const TF z0s = (s2 == "qt" && wall.z0q.size() == wall.z0h.size())
                              ? wall.z0q[m] : wall.z0h[m];
                 const TF zd = std::max(diag_z_scalar, z0s*TF(1.001));
-                const TF r  = most::fh(z1, z0s, L)
+                const TF r  = most::fh(z1s, z0s, L)
                             / most::fh(zd, z0s, L);
                 val = pw + (p1 - pw) * r;
 
@@ -5030,6 +5717,38 @@ bool Immersed_boundary<TF>::calc_surface_diag(
     }
 }
 
+
+namespace
+{
+    // apply_ib_tavg_tower.py: the tower profiles, in the order of tower_stat.
+    struct Tower_var { const char* name; const char* unit; const char* longname; };
+    const Tower_var tower_vars[] = {
+        {"u_tower",       "m s-1",      "interval mean u"},
+        {"v_tower",       "m s-1",      "interval mean v"},
+        {"w_tower",       "m s-1",      "interval mean w"},
+        {"thl_tower",     "K",          "interval mean thl"},
+        {"qt_tower",      "kg kg-1",    "interval mean qt"},
+        {"u2_tower",      "m2 s-2",     "resolved u variance"},
+        {"v2_tower",      "m2 s-2",     "resolved v variance"},
+        {"w2_tower",      "m2 s-2",     "resolved w variance"},
+        {"uv_tower",      "m2 s-2",     "resolved u-v covariance"},
+        {"uw_tower",      "m2 s-2",     "resolved u-w covariance"},
+        {"vw_tower",      "m2 s-2",     "resolved v-w covariance"},
+        {"thl2_tower",    "K2",         "resolved thl variance"},
+        {"uthl_tower",    "K m s-1",    "resolved u-thl covariance"},
+        {"vthl_tower",    "K m s-1",    "resolved v-thl covariance"},
+        {"wthl_tower",    "K m s-1",    "resolved w-thl covariance"},
+        {"wqt_tower",     "m s-1",      "resolved w-qt covariance (kg kg-1 m s-1)"},
+        {"tke_res_tower", "m2 s-2",     "resolved TKE, (u2+v2+w2)/2"},
+        {"tke_sgs_tower", "m2 s-2",     "interval mean SGS TKE"},
+        {"uw_sgs_tower",  "m2 s-2",     "SGS u-w flux, -K_m (du/dz + dw/dx)"},
+        {"vw_sgs_tower",  "m2 s-2",     "SGS v-w flux, -K_m (dv/dz + dw/dy)"},
+        {"wthl_sgs_tower","K m s-1",    "SGS w-thl flux, -K_h dthl/dz"},
+        {"wqt_sgs_tower", "m s-1",      "SGS w-qt flux, -K_h dqt/dz (kg kg-1 m s-1)"},
+    };
+    const int tower_nout = sizeof(tower_vars) / sizeof(tower_vars[0]);
+    const int tower_nvar = 21;  // 17 as the planes + 4 SGS fluxes
+}
 
 template<typename TF>
 void Immersed_boundary<TF>::create_column(Column<TF>& column)
@@ -5061,6 +5780,29 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
     // exercise is about.
     column.add_prof("ib_mask", "1 where the cell is air, 0 where it is inside "
                                "the immersed boundary", "-", "z");
+
+    // apply_ib_tavg_tower.py: virtual towers. The tavg statistics as
+    // profiles at every column; NaN inside the terrain and until the first
+    // interval is complete.
+    if (tavg_interval > TF(0))
+    {
+        for (int n=0; n<tower_nout; ++n)
+            column.add_prof(tower_vars[n].name, tower_vars[n].longname,
+                            tower_vars[n].unit, "z");
+        column.add_time_series("tower_t_end",
+                "end time of the tavg interval the *_tower profiles belong to", "s");
+        column.add_time_series("tower_t_avg",
+                "averaging length of the *_tower profiles", "s");
+        tower_i.clear();
+        tower_j.clear();
+        column.get_column_locations(tower_i, tower_j);
+        tower_t_end = -1.;
+        tower_t_avg = 0.;
+        int ntot = column.get_n_columns();
+        master.print_message(
+                "IB: virtual towers - %d tavg profile(s) at each of the %d "
+                "column(s), every [IB] tavg_interval\n", tower_nout, ntot);
+    }
 
     static const struct { const char* name; const char* unit;
                           const char* longname; } known[] = {
@@ -5204,6 +5946,31 @@ void Immersed_boundary<TF>::exec_column(Column<TF>& column, Thermo<TF>& thermo)
         fields.release_tmp(tmp);
     }
 
+    // apply_ib_tavg_tower.py: the last completed tavg interval.
+    if (tavg_interval > TF(0))
+    {
+        const TF nan = std::numeric_limits<TF>::quiet_NaN();
+        const int ntow = tower_i.size();
+        auto tmp = fields.get_tmp();
+        for (int n=0; n<tower_nout; ++n)
+        {
+            for (int t=0; t<ntow; ++t)
+                for (int k=0; k<gd.kcells; ++k)
+                {
+                    const int ijk = tower_i[t] + tower_j[t]*gd.icells + k*gd.ijcells;
+                    tmp->fld[ijk] = tower_stat.empty() ? nan
+                            : tower_stat[(size_t(n)*ntow + t)*gd.kcells + k];
+                }
+            column.calc_column(tower_vars[n].name, tmp->fld.data(), TF(0));
+        }
+        std::fill(tmp->flux_bot.begin(), tmp->flux_bot.end(),
+                  (tower_t_end < 0.) ? nan : TF(tower_t_end));
+        column.calc_time_series("tower_t_end", tmp->flux_bot.data(), TF(0));
+        std::fill(tmp->flux_bot.begin(), tmp->flux_bot.end(), TF(tower_t_avg));
+        column.calc_time_series("tower_t_avg", tmp->flux_bot.data(), TF(0));
+        fields.release_tmp(tmp);
+    }
+
     if (columnlist.empty())
         return;
 
@@ -5217,6 +5984,385 @@ void Immersed_boundary<TF>::exec_column(Column<TF>& column, Thermo<TF>& thermo)
     fields.release_tmp(tmp);
 }
 #endif
+
+// ===========================================================================
+//   [IB] tavg_interval - apply_ib_tavg.py
+// ===========================================================================
+template<typename TF>
+void Immersed_boundary<TF>::calc_sgs_tke(TF* const restrict e)
+{
+    /* The SGS TKE at the cell centres. tke2: the prognostic sgstke. smag2:
+       the estimate e = (K_m / (c_m Delta))^2 of a 1.5-order closure with
+       K_m = c_m Delta sqrt(e), Delta = (dx dy dz)^(1/3), c_m = [IB] tavg_cm
+       (0.12, MicroHH's tke2 default). With swanisotropic K_v is first
+       scaled to that Delta: K = K_v (Delta / mlen0_v)^2 ([diff] mlen0_v).
+       Wherever K is damped (Mason, the IB wall, strain MOST) e is too. */
+    auto& gd = grid.get_grid_data();
+    std::fill(e, e + gd.ncells, TF(0));
+
+    if (sgs_kind == 2 && fields.sp.count("sgstke"))
+    {
+        const TF* const restrict sgstke = fields.sp.at("sgstke")->fld.data();
+        for (int n=0; n<gd.ncells; ++n)
+            e[n] = std::max(sgstke[n], TF(0));
+        return;
+    }
+
+    const std::string name = (sgs_kind == 1) ? "evisc_v" : "evisc";
+    if (!fields.sd.count(name))
+        return;
+    const TF* const restrict evisc = fields.sd.at(name)->fld.data();
+
+    // apply_ib_sgs_tke_mason.py. With sw_mason_wall the closure's lengths
+    // are damped with the distance to the surface, and the estimate uses
+    // the SAME lengths: lambda = l_iso(d)/cs instead of Delta, and for
+    // swanisotropic K = K_v (l_iso(d)/l_v(d))^2, with
+    // l(d) = [1/l0^n + 1/(kappa (d + z0))^n]^(-1/n), d = max(z - dem, dz/2).
+    // Without that the equivalent eddy stays Delta (46 m at S5) right down
+    // to the first air cell, which no eddy can be. Static: built once.
+    const bool mason_active = sw_mason_wall
+            && ((sgs_kind == 0 && sw_mason_ib) || sgs_kind == 1);
+    if (mason_active)
+    {
+        if (sgs_tke_g.empty())
+        {
+            const TF kappa = Constants::kappa<TF>;
+            const TF n = mason_n;
+            auto l_mason = [&](const TF l0, const TF x, const TF z0)
+            {
+                return std::pow(TF(1)/(TF(1)/std::pow(l0, n)
+                                       + TF(1)/std::pow(kappa*(x + z0), n)), TF(1)/n);
+            };
+            sgs_tke_g.assign(gd.ncells, TF(0));
+            for (int k=gd.kstart; k<gd.kend; ++k)
+            {
+                const TF delta = std::cbrt(gd.dx*gd.dy*gd.dz[k]);
+                for (int j=gd.jstart; j<gd.jend; ++j)
+                    for (int i=gd.istart; i<gd.iend; ++i)
+                    {
+                        const int ij  = i + j*gd.icells;
+                        const int ijk = ij + k*gd.ijcells;
+                        const TF d = std::max(gd.z[k] - dem[ij], TF(0.5)*gd.dz[k]);
+                        const TF z0w = sw_z0m_map ? z0m_map[ij] : z0m_ib;
+                        const TF l_iso = l_mason(cs_ib*delta, d, z0w);
+                        TF g = cs_ib / (tavg_cm*l_iso);
+                        if (sgs_kind == 1)
+                            g *= fm::pow2(l_iso / l_mason(cs_ib*mason_mlen0_v, d, z0w));
+                        sgs_tke_g[ijk] = g;
+                    }
+            }
+        }
+        for (int k=gd.kstart; k<gd.kend; ++k)
+            for (int j=gd.jstart; j<gd.jend; ++j)
+                for (int i=gd.istart; i<gd.iend; ++i)
+                {
+                    const int ijk = i + j*gd.icells + k*gd.ijcells;
+                    e[ijk] = fm::pow2(std::max(evisc[ijk], TF(0))*sgs_tke_g[ijk]);
+                }
+        return;
+    }
+
+    for (int k=gd.kstart; k<gd.kend; ++k)
+    {
+        const TF delta = std::cbrt(gd.dx*gd.dy*gd.dz[k]);
+        const TF mlen0_v = (tavg_mlen0_v > TF(0)) ? tavg_mlen0_v : gd.dz[k];
+        const TF kfac = (sgs_kind == 1) ? fm::pow2(delta/mlen0_v) : TF(1);
+        const TF c = TF(1) / (tavg_cm*delta);
+        for (int j=gd.jstart; j<gd.jend; ++j)
+            for (int i=gd.istart; i<gd.iend; ++i)
+            {
+                const int ijk = i + j*gd.icells + k*gd.ijcells;
+                e[ijk] = fm::pow2(std::max(evisc[ijk], TF(0))*kfac*c);
+            }
+    }
+}
+
+template<typename TF>
+void Immersed_boundary<TF>::exec_tavg(
+        Cross<TF>& cross, const double time, const double dt,
+        const unsigned long iotime)
+{
+    /* Time statistics at fixed heights above the local surface. Called at
+       the start of every full time step; each sample counts with the dt of
+       the step it starts, so the sums are time integrals. At the end of
+       every [IB] tavg_interval the means, (co)variances and TKE are written
+       as xy planes <q>_tavg<h> and the sums start again. Sampling as for
+       the <var>_tf planes: never below the first air level, u and v at the
+       cell centre. */
+    if (sw_ib == IB_type::Disabled || tavg_interval <= TF(0))
+        return;
+
+    auto& gd = grid.get_grid_data();
+    const int nh = tavg_heights.size();
+    const std::vector<std::string> mean_names = {"u", "v", "w", "thl", "qt"};
+    const std::vector<std::string> out_names = {
+            "u", "v", "w", "thl", "qt",
+            "u2", "v2", "w2", "uv", "uw", "vw",
+            "thl2", "uthl", "vthl", "wthl", "wqt", "tke_res", "tke_sgs"};
+    const int nvar = 17;    // u v w thl qt uu vv ww uv uw vw tt ut vt wt wq e
+
+    if (tavg_sum.empty())
+        tavg_sum.assign(size_t(nvar)*nh*gd.ijcells, TF(0));
+    if (tavg_end < 0.)
+    {
+        tavg_end = (std::floor(time/tavg_interval + 1e-9) + 1.) * tavg_interval;
+        if (std::abs(std::fmod(time, double(tavg_interval))) > 1e-6*tavg_interval)
+            master.print_message(
+                    "IB: tavg - the first interval is partial (t = %g s); "
+                    "averages are over the time actually sampled\n", time);
+    }
+
+    auto at = [&](const int v, const int q, const int ij) -> TF&
+    {
+        return tavg_sum[(size_t(v)*nh + q)*gd.ijcells + ij];
+    };
+
+    // ---- write and restart at the end of an interval ----------------------
+    if (time >= tavg_end - 1e-9*tavg_interval)
+    {
+        if (tavg_time > 0.)
+        {
+            const TF inv = TF(1./tavg_time);
+            auto tmp = fields.get_tmp();
+            TF* const restrict out = tmp->flux_bot.data();
+            const TF no_offset = TF(0);
+
+            for (int q=0; q<nh; ++q)
+            {
+                const std::string sh = "_tavg" + std::to_string(
+                        int(std::lround(tavg_heights[q])));
+                for (size_t o=0; o<out_names.size(); ++o)
+                {
+                    std::fill(tmp->flux_bot.begin(), tmp->flux_bot.end(), TF(0));
+                    for (int j=gd.jstart; j<gd.jend; ++j)
+                        for (int i=gd.istart; i<gd.iend; ++i)
+                        {
+                            const int ij = i + j*gd.icells;
+                            const TF mu = at(0,q,ij)*inv, mv = at(1,q,ij)*inv;
+                            const TF mw = at(2,q,ij)*inv, mt = at(3,q,ij)*inv;
+                            const TF mq = at(4,q,ij)*inv;
+                            const TF vu = at(5,q,ij)*inv - mu*mu;
+                            const TF vv = at(6,q,ij)*inv - mv*mv;
+                            const TF vw = at(7,q,ij)*inv - mw*mw;
+                            TF val;
+                            switch (o)
+                            {
+                                case 0:  val = mu; break;
+                                case 1:  val = mv; break;
+                                case 2:  val = mw; break;
+                                case 3:  val = mt; break;
+                                case 4:  val = mq; break;
+                                case 5:  val = vu; break;
+                                case 6:  val = vv; break;
+                                case 7:  val = vw; break;
+                                case 8:  val = at(8,q,ij)*inv - mu*mv; break;
+                                case 9:  val = at(9,q,ij)*inv - mu*mw; break;
+                                case 10: val = at(10,q,ij)*inv - mv*mw; break;
+                                case 11: val = at(11,q,ij)*inv - mt*mt; break;
+                                case 12: val = at(12,q,ij)*inv - mu*mt; break;
+                                case 13: val = at(13,q,ij)*inv - mv*mt; break;
+                                case 14: val = at(14,q,ij)*inv - mw*mt; break;
+                                case 15: val = at(15,q,ij)*inv - mw*mq; break;
+                                case 16: val = TF(0.5)*(vu + vv + vw); break;
+                                default: val = at(16,q,ij)*inv; break;
+                            }
+                            out[ij] = val;
+                        }
+                    boundary_cyclic.exec_2d(out);
+                    cross.cross_plane(out, no_offset, out_names[o] + sh, iotime);
+                }
+            }
+            fields.release_tmp(tmp);
+            master.print_message(
+                    "IB: tavg - wrote %d plane(s) at t = %g s, averaged over %g s\n",
+                    int(nh*out_names.size()), time, tavg_time);
+
+            // apply_ib_tavg_tower.py: the tower profiles of this interval.
+            const int ntow = tower_i.size();
+            if (ntow > 0)
+            {
+                const TF nan = std::numeric_limits<TF>::quiet_NaN();
+                tower_stat.assign(size_t(tower_nout)*ntow*gd.kcells, nan);
+                auto ts = [&](const int v, const int t, const int k) -> TF
+                {
+                    return tower_sum[(size_t(v)*ntow + t)*gd.kcells + k]*inv;
+                };
+                for (int t=0; t<ntow; ++t)
+                {
+                    const int ij = tower_i[t] + tower_j[t]*gd.icells;
+                    for (int k=std::max(int(k_dem[ij]), gd.kstart); k<gd.kend; ++k)
+                    {
+                        const TF mu = ts(0,t,k), mv = ts(1,t,k), mw = ts(2,t,k);
+                        const TF mt = ts(3,t,k), mq = ts(4,t,k);
+                        const TF vu = ts(5,t,k) - mu*mu;
+                        const TF vv = ts(6,t,k) - mv*mv;
+                        const TF vw = ts(7,t,k) - mw*mw;
+                        const TF val[tower_nout] = {
+                                mu, mv, mw, mt, mq, vu, vv, vw,
+                                ts(8,t,k) - mu*mv, ts(9,t,k) - mu*mw, ts(10,t,k) - mv*mw,
+                                ts(11,t,k) - mt*mt, ts(12,t,k) - mu*mt,
+                                ts(13,t,k) - mv*mt, ts(14,t,k) - mw*mt,
+                                ts(15,t,k) - mw*mq, TF(0.5)*(vu + vv + vw),
+                                ts(16,t,k), ts(17,t,k), ts(18,t,k),
+                                ts(19,t,k), ts(20,t,k)};
+                        for (int n=0; n<tower_nout; ++n)
+                            tower_stat[(size_t(n)*ntow + t)*gd.kcells + k] = val[n];
+                    }
+                }
+                tower_t_end = time;
+                tower_t_avg = tavg_time;
+            }
+        }
+        std::fill(tavg_sum.begin(), tavg_sum.end(), TF(0));
+        std::fill(tower_sum.begin(), tower_sum.end(), TF(0));
+        tavg_time = 0.;
+        while (tavg_end <= time + 1e-9*tavg_interval)
+            tavg_end += tavg_interval;
+    }
+
+    // ---- accumulate --------------------------------------------------------
+    auto tmpe = fields.get_tmp();
+    calc_sgs_tke(tmpe->fld.data());
+
+    const TF* const restrict uf = fields.mp.at("u")->fld.data();
+    const TF* const restrict vf = fields.mp.at("v")->fld.data();
+    const TF* const restrict wf = fields.mp.at("w")->fld.data();
+    const TF* const restrict tf = fields.sp.count("thl")
+            ? fields.sp.at("thl")->fld.data() : nullptr;
+    const TF* const restrict qf = fields.sp.count("qt")
+            ? fields.sp.at("qt")->fld.data() : nullptr;
+    const TF* const restrict ef = tmpe->fld.data();
+    const int ii = 1;
+    const int jj = gd.icells;
+    const TF wdt = TF(dt);
+
+    // The two levels bracketing zt on axis zax, never below the first air
+    // level, and the interpolation weight of the upper one.
+    auto bracket = [&](const std::vector<TF>& zax, const int ij, const TF zt,
+                       int& k0, int& k1, TF& f)
+    {
+        k0 = std::max(int(k_dem[ij]), gd.kstart);
+        while (k0+1 < gd.kend && zax[k0+1] <= zt)
+            ++k0;
+        k1 = std::min(k0+1, gd.kend-1);
+        f = TF(0);
+        if (k1 > k0 && zax[k1] > zax[k0])
+            f = std::min(std::max((zt - zax[k0])/(zax[k1] - zax[k0]), TF(0)), TF(1));
+    };
+
+    for (int q=0; q<nh; ++q)
+        for (int j=gd.jstart; j<gd.jend; ++j)
+            for (int i=gd.istart; i<gd.iend; ++i)
+            {
+                const int ij = i + j*jj;
+                const TF zt = dem[ij] + tavg_heights[q];
+                int k0, k1;
+                TF f;
+
+                bracket(gd.z, ij, zt, k0, k1, f);
+                const int a0 = ij + k0*gd.ijcells;
+                const int a1 = ij + k1*gd.ijcells;
+                const TF u0 = TF(0.5)*(uf[a0] + uf[a0+ii]);
+                const TF u1 = TF(0.5)*(uf[a1] + uf[a1+ii]);
+                const TF v0 = TF(0.5)*(vf[a0] + vf[a0+jj]);
+                const TF v1 = TF(0.5)*(vf[a1] + vf[a1+jj]);
+                const TF u = (TF(1)-f)*u0 + f*u1;
+                const TF v = (TF(1)-f)*v0 + f*v1;
+                const TF t = tf ? (TF(1)-f)*tf[a0] + f*tf[a1] : TF(0);
+                const TF qq = qf ? (TF(1)-f)*qf[a0] + f*qf[a1] : TF(0);
+                const TF e = (TF(1)-f)*ef[a0] + f*ef[a1];
+
+                int kw0, kw1;
+                TF fw;
+                bracket(gd.zh, ij, zt, kw0, kw1, fw);
+                const TF w = (TF(1)-fw)*wf[ij + kw0*gd.ijcells]
+                           + fw*wf[ij + kw1*gd.ijcells];
+
+                at(0,q,ij)  += wdt*u;
+                at(1,q,ij)  += wdt*v;
+                at(2,q,ij)  += wdt*w;
+                at(3,q,ij)  += wdt*t;
+                at(4,q,ij)  += wdt*qq;
+                at(5,q,ij)  += wdt*u*u;
+                at(6,q,ij)  += wdt*v*v;
+                at(7,q,ij)  += wdt*w*w;
+                at(8,q,ij)  += wdt*u*v;
+                at(9,q,ij)  += wdt*u*w;
+                at(10,q,ij) += wdt*v*w;
+                at(11,q,ij) += wdt*t*t;
+                at(12,q,ij) += wdt*u*t;
+                at(13,q,ij) += wdt*v*t;
+                at(14,q,ij) += wdt*w*t;
+                at(15,q,ij) += wdt*w*qq;
+                at(16,q,ij) += wdt*e;
+            }
+
+    // ---- virtual towers (apply_ib_tavg_tower.py) ---------------------------
+    // Every air level of every column on this process, at the cell centre:
+    // u, v from the two faces, w from the two half levels. SGS fluxes are the
+    // vertical components with the K the diffusion operator uses: centred
+    // differences, one-sided at the first air level and at the top.
+    const int ntow = tower_i.size();
+    if (ntow > 0)
+    {
+        if (tower_sum.empty())
+            tower_sum.assign(size_t(tower_nvar)*ntow*gd.kcells, TF(0));
+
+        std::shared_ptr<Field3d<TF>> ktmp_m, ktmp_s;
+        const TF* km_h; const TF* km_v; TF km_fac;
+        const TF* ks_h; const TF* ks_v; TF ks_fac;
+        get_sgs_k("u", km_h, km_v, km_fac, ktmp_m);
+        get_sgs_k(tf ? "thl" : "u", ks_h, ks_v, ks_fac, ktmp_s);
+
+        const int kk = gd.ijcells;
+        auto uc = [&](const int ijk) { return TF(0.5)*(uf[ijk] + uf[ijk+ii]); };
+        auto vc = [&](const int ijk) { return TF(0.5)*(vf[ijk] + vf[ijk+jj]); };
+        auto wc = [&](const int ijk) { return TF(0.5)*(wf[ijk] + wf[ijk+kk]); };
+
+        for (int t=0; t<ntow; ++t)
+        {
+            const int ij = tower_i[t] + tower_j[t]*jj;
+            const int kair = std::max(int(k_dem[ij]), gd.kstart);
+            for (int k=kair; k<gd.kend; ++k)
+            {
+                const int ijk = ij + k*kk;
+                const int kp = std::min(k+1, gd.kend-1);
+                const int km = std::max(k-1, kair);
+                const TF dzi = (kp > km) ? TF(1)/(gd.z[kp] - gd.z[km]) : TF(0);
+                const int ijkp = ij + kp*kk;
+                const int ijkm = ij + km*kk;
+
+                const TF u = uc(ijk), v = vc(ijk), w = wc(ijk);
+                const TF t3 = tf ? tf[ijk] : TF(0);
+                const TF q3 = qf ? qf[ijk] : TF(0);
+                const TF e = ef[ijk];
+
+                const TF dudz = (uc(ijkp) - uc(ijkm))*dzi;
+                const TF dvdz = (vc(ijkp) - vc(ijkm))*dzi;
+                const TF dwdx = (wc(ijk+ii) - wc(ijk-ii))/(TF(2)*gd.dx);
+                const TF dwdy = (wc(ijk+jj) - wc(ijk-jj))/(TF(2)*gd.dy);
+                const TF dtdz = tf ? (tf[ijkp] - tf[ijkm])*dzi : TF(0);
+                const TF dqdz = qf ? (qf[ijkp] - qf[ijkm])*dzi : TF(0);
+                const TF Km = km_v[ijk]*km_fac;
+                const TF Ks = ks_v[ijk]*ks_fac;
+
+                const TF vals[tower_nvar] = {
+                        u, v, w, t3, q3, u*u, v*v, w*w, u*v, u*w, v*w,
+                        t3*t3, u*t3, v*t3, w*t3, w*q3, e,
+                        -Km*(dudz + dwdx), -Km*(dvdz + dwdy), -Ks*dtdz, -Ks*dqdz};
+                for (int n=0; n<tower_nvar; ++n)
+                    tower_sum[(size_t(n)*ntow + t)*gd.kcells + k] += wdt*vals[n];
+            }
+        }
+        if (ktmp_m)
+            fields.release_tmp(ktmp_m);
+        if (ktmp_s)
+            fields.release_tmp(ktmp_s);
+    }
+
+    fields.release_tmp(tmpe);
+    tavg_time += dt;
+}
 
 template<typename TF>
 void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
@@ -5255,7 +6401,15 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
                     const bool want_w    = (var == "w");
 
                     const TF* fld = nullptr;
-                    if (!want_uv && !want_w)
+                    // apply_ib_tavg.py: the SGS TKE (prognostic or estimated)
+                    std::shared_ptr<Field3d<TF>> tmp_sgs;
+                    if (var == "sgs_tke")
+                    {
+                        tmp_sgs = fields.get_tmp();
+                        calc_sgs_tke(tmp_sgs->fld.data());
+                        fld = tmp_sgs->fld.data();
+                    }
+                    else if (!want_uv && !want_w)
                     {
                         if (fields.sp.find(var) == fields.sp.end())
                             continue;               // unknown: nothing to do
@@ -5339,6 +6493,8 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
                                           name_h, iotime);
                     }
                     fields.release_tmp(tmpd);
+                    if (tmp_sgs)
+                        fields.release_tmp(tmp_sgs);
                     continue;
                 }
             }
@@ -5467,7 +6623,7 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
                     for (int m=0; m<wall.n; ++m)
                         if (wall.axis[m] == 2)
                             tmp->flux_bot[wall.i[m] + wall.j[m]*gd.icells] =
-                                    wall.ustar[m] * most::fh(wall.dn[m],
+                                    wall.ustar[m] * most::fh(wall_dn_flux()[m],
                                                              wall.z0h[m],
                                                              wall.obuk[m]);
                 }
@@ -5514,7 +6670,7 @@ namespace
             const int d, const bool vertical, const bool limited,
             const TF dxi, const TF* const restrict dzi,
             const TF* const restrict rhoref, const TF* const restrict rhorefh,
-            const int ijcells, TF& max_dst)
+            const int ijcells, TF& max_dst, const TF delta)
     {
         namespace fd4 = Finite_difference::O4;
         namespace fd6 = Finite_difference::O6;
@@ -5543,9 +6699,9 @@ namespace
             else if (cls == 1)     // both face cells air: 1st-order upwind
                 f_new = (un > TF(0)) ? un * s[c-d] : un * s[c];
             else if (cls == 2)     // wall, air on the HIGH side
-                f_new = un * s[c];
+                f_new = (un > TF(0)) ? un * (s[c] + delta) : un * s[c];
             else                   // wall, air on the LOW side
-                f_new = un * s[c-d];
+                f_new = (un < TF(0)) ? un * (s[c-d] + delta) : un * s[c-d];
 
             const TF df = f_new - f_old;
             TF dhi, dlo;
@@ -5566,6 +6722,41 @@ namespace
             // largest change to an AIR cell, for the log
             if (cls != 3) max_dst = std::max(max_dst, std::abs(dhi));
             if (cls != 2) max_dst = std::max(max_dst, std::abs(dlo));
+        }
+    }
+
+    // Sums over the wall faces (cls 2 and 3) for sw_advec_wall_conserve.
+    // m is the mass flux INTO the air per unit time (rho * u_n * area);
+    // sums = {sum m s_air, sum m, sum |m| s_air, sum |m|, sum_{m>0} m}.
+    template<typename TF>
+    void advec_wall_sums(
+            TF* const restrict sums, const TF* const restrict s,
+            const TF* const restrict vel,
+            const std::vector<int>& face_ijk,
+            const std::vector<signed char>& face_cls,
+            const int d, const bool vertical, const TF area_h,
+            const TF* const restrict dz, const TF area_v,
+            const TF* const restrict rhoref, const TF* const restrict rhorefh,
+            const int ijcells)
+    {
+        for (std::size_t n=0; n<face_ijk.size(); ++n)
+        {
+            const int cls = face_cls[n];
+            if (cls < 2)
+                continue;
+
+            const int c = face_ijk[n];
+            const int k = c / ijcells;
+            const TF w8 = vertical ? rhorefh[k] * area_v : rhoref[k] * dz[k] * area_h;
+            const TF sa = (cls == 2) ? s[c] : s[c-d];
+            const TF m  = (cls == 2) ? w8 * vel[c] : -w8 * vel[c];
+
+            sums[0] += m * sa;
+            sums[1] += m;
+            sums[2] += std::abs(m) * sa;
+            sums[3] += std::abs(m);
+            if (m > TF(0))
+                sums[4] += m;
         }
     }
 }
@@ -5591,6 +6782,30 @@ void Immersed_boundary<TF>::exec_advec_wall()
                 advec_wall_limited.begin(), advec_wall_limited.end(),
                 it.first) != advec_wall_limited.end();
 
+        // [IB] sw_advec_wall_conserve: the inflow wall faces carry
+        // s_air + delta, with delta such that the net transport through
+        // all wall faces (all ranks) is that of the |m|-weighted mean s,
+        // i.e. zero for a divergence-free flow. A uniform field gives 0.
+        TF delta = TF(0);
+        if (sw_advec_wall_conserve)
+        {
+            TF sums[5] = {0, 0, 0, 0, 0};
+            const TF area_h[3] = {gd.dy, gd.dx, TF(0)};
+            for (int a=0; a<3; ++a)
+                advec_wall_sums<TF>(
+                        sums, it.second->fld.data(), vel[a],
+                        advec_face_ijk[a], advec_face_cls[a], dd[a], a == 2,
+                        area_h[a], gd.dz.data(), gd.dx*gd.dy,
+                        fields.rhoref.data(), fields.rhorefh.data(), gd.ijcells);
+            master.sum(sums, 5);
+
+            if (sums[3] > TF(0) && sums[4] > TF(0))
+            {
+                const TF s_mean = sums[2] / sums[3];
+                delta = -(sums[0] - s_mean * sums[1]) / sums[4];
+            }
+        }
+
         TF max_dst = TF(0);
         for (int a=0; a<3; ++a)
             advec_wall_correct<TF>(
@@ -5598,7 +6813,7 @@ void Immersed_boundary<TF>::exec_advec_wall()
                     vel[a], advec_face_ijk[a], advec_face_cls[a],
                     dd[a], a == 2, limited, dxi[a], gd.dzi.data(),
                     fields.rhoref.data(), fields.rhorefh.data(),
-                    gd.ijcells, max_dst);
+                    gd.ijcells, max_dst, delta);
 
         if (!advec_wall_reported)
         {
@@ -5608,6 +6823,11 @@ void Immersed_boundary<TF>::exec_advec_wall()
                     "advective tendency on the first call %.3g /s%s\n",
                     it.first.c_str(), max_dst,
                     limited ? " (flux-limited field)" : "");
+            if (sw_advec_wall_conserve)
+                master.print_message(
+                        "IB: sw_advec_wall_conserve - %s: inflow correction "
+                        "delta = %.3g on the first call\n",
+                        it.first.c_str(), delta);
         }
     }
     advec_wall_reported = true;

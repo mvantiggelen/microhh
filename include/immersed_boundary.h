@@ -189,11 +189,16 @@ class Immersed_boundary
         // The terrain cells (no-ghost-cell index, the layout of the pressure
         // solver) under [IB] sw_wall_kinematic; empty otherwise.
         const std::vector<int>& get_terrain_cells() const { return terrain_cells; }
+        // apply_basestate_air.py: the first air level of every column
+        const std::vector<unsigned int>& get_k_dem() const { return k_dem; }
         // Air-only scalar advection next to the terrain: [IB] sw_advec_wall.
         void exec_advec_wall();
         // Keep the inside of the terrain inert: see [IB] sw_blank_solid.
         void blank_solid_momentum();
         void blank_solid_scalars();
+        // [IB] sw_blank_solid_tend: zero the tendencies inside the terrain
+        // after the pressure solve - apply_ib_blank_solid_tend.py
+        void exec_blank_solid_tend();
         void update_time_dependent(Timeloop<TF>&);
         // Restart files of the prognostic surface state ([IB] sw_seb).
         void save(const int);
@@ -203,6 +208,9 @@ class Immersed_boundary
         void exec_wall_model(Thermo<TF>&, Stats<TF>&);
 
         void exec_cross(Cross<TF>&, unsigned long);
+        // [IB] tavg_interval: time statistics on terrain-following planes,
+        // resolved and SGS TKE (apply_ib_tavg.py).
+        void exec_tavg(Cross<TF>&, const double, const double, const unsigned long);
         // Column output: the surface diagnostics as time series at the
         // [column] locations, and the IB mask of that column as a profile.
         void create_column(Column<TF>&);
@@ -289,6 +297,34 @@ class Immersed_boundary
         bool sw_strain_mlen;
         bool sw_mason_ib;
         TF cs_ib;
+        // apply_ib_mason_wall.py: Mason's damping with the height above the
+        // LOCAL surface instead of the domain floor, for every air cell.
+        bool sw_mason_wall;
+        TF mason_n;                   // exponent the closure uses (1 or 2)
+        TF mason_mlen0_h;             // [diff] mlen0_h (swanisotropic)
+        TF mason_mlen0_v;             // [diff] mlen0_v (swanisotropic)
+        TF mason_z0_floor;            // [boundary] z0m, what Diff_smag2 used
+        std::vector<TF> mason_f_h;    // factor on evisc (iso) or evisc_h (aniso)
+        std::vector<TF> mason_f_v;    // factor on evisc_v (aniso)
+        void build_mason_wall();
+        std::vector<TF> sgs_tke_g;    // apply_ib_sgs_tke_mason.py: e = (K g)^2 per cell
+
+        // apply_ib_wall_sample.py: the wall model's input wind, buoyancy and
+        // scalars sampled at a fixed distance along the surface normal (an
+        // image point, as Bao et al. 2018), not in the first air cell.
+        bool sw_wall_sample;
+        TF wall_sample_dz;                 // distance in units of the local dz
+        std::vector<TF> wall_dn_s;         // distance actually used, per face
+        std::vector<TF> wall_du_s;         // tangential speed at the image point
+        std::vector<TF> wall_u_s;          // u, v at the image point (10-m diag)
+        std::vector<TF> wall_v_s;
+        std::vector<TF> wall_db_s;         // b(image) - b(wall)
+        std::vector<TF> wall_obuk_s;       // L guess of the sampled solve
+        std::vector<char> wall_samp_ok;    // 1 where the image point was usable
+        std::map<std::string, std::vector<TF>> wall_s_s;   // scalars at the image point
+        bool wall_sample_reported;
+        void sample_wall(const TF* const, const std::vector<TF>&);
+        const std::vector<TF>& wall_dn_flux() const { return sw_wall_sample ? wall_dn_s : wall.dn; }
         bool strain_most_built;
         TF strain_most_min;
         std::vector<int> strain_most_m;   // one face index per unique wall cell
@@ -354,10 +390,13 @@ class Immersed_boundary
         bool sw_advec_wall;
         bool advec_wall_reported;
         std::vector<std::string> advec_wall_limited;   // [advec] fluxlimit_list
+        // [IB] sw_advec_wall_conserve - apply_ib_advec_wall_conserve.py
+        bool sw_advec_wall_conserve;
         std::vector<int> advec_face_ijk[3];
         std::vector<signed char> advec_face_cls[3];
 
         bool sw_blank_solid;
+        bool sw_blank_solid_tend;   // apply_ib_blank_solid_tend.py
         std::vector<int> blank_s;
         std::vector<int> blank_s_ij;
         std::vector<int> blank_u;
@@ -373,6 +412,20 @@ class Immersed_boundary
         unsigned long itime_sbot_next;
         std::map<std::string, std::vector<TF>> sbot_2d_prev;
         std::map<std::string, std::vector<TF>> sbot_2d_next;
+
+        // [IB] sbcbot=flux with the wall model (apply_ib_flux_bc.py). The
+        // prescribed kinematic surface fluxes per unit surface area: the
+        // sbot_spatial scalars here, the others are sbc. sbot_2d then holds
+        // the surface value diagnosed from MOST, which the ghost cells, the
+        // blanked terrain and the diagnostics read.
+        bool sw_ib_flux = false;
+        TF flux_ds_max = TF(30);
+        bool flux_reported = false;
+        std::map<std::string, std::vector<TF>> flux_2d;
+        std::vector<TF> wall_flux_presc_face;
+        std::vector<TF> bflux_wall;
+        TF ib_flux_presc(const std::string&, const int) const;
+        void ib_flux_to_sbot();
 
         /*
          * [IB] sw_vegetation - apply_ib_vegetation.py.
@@ -462,6 +515,25 @@ class Immersed_boundary
         // apply_ib_tf_cross.py.
         bool sw_tf_cross;
         std::vector<TF> tf_cross_heights;
+
+        // apply_ib_tavg.py: time statistics on terrain-following planes.
+        TF tavg_interval;            // [IB] tavg_interval [s], 0 = off
+        TF tavg_cm;                  // [IB] tavg_cm, c_m of the SGS TKE estimate
+        TF tavg_mlen0_v;             // [diff] mlen0_v (swanisotropic), <= 0: dz
+        std::vector<TF> tavg_heights;
+        std::vector<TF> tavg_sum;    // tavg_nvar x heights x ijcells, dt-weighted
+        double tavg_time;            // sum of dt in the current interval
+        double tavg_end;             // end of the current interval (<0: not set)
+        void calc_sgs_tke(TF* const);
+
+        // apply_ib_tavg_tower.py: the same statistics as profiles at the
+        // [column] locations of this process (virtual towers).
+        std::vector<int> tower_i;    // local i of every tower on this process
+        std::vector<int> tower_j;
+        std::vector<TF> tower_sum;   // tower_nvar x towers x kcells, dt-weighted
+        std::vector<TF> tower_stat;  // tower_nout x towers x kcells, last interval
+        double tower_t_end;          // end of the interval tower_stat belongs to
+        double tower_t_avg;          // its averaging length
 
         // All ghost cell properties
         std::map<std::string, Ghost_cells<TF>> ghost;

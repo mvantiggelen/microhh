@@ -1403,6 +1403,46 @@ unsigned long Boundary_lateral<TF>::get_time_limit(unsigned long itime)
 
 
 template <typename TF>
+void Boundary_lateral<TF>::set_ghost_cells_scalars()
+{
+    /* apply_lbc_ib_halos.py. The open-boundary ghost cells of the slist
+       scalars, again. Immersed_boundary::exec_scalars ends with a
+       boundary_cyclic exchange, which knows nothing about open boundaries
+       and wraps the halo periodically: the ghost cells at an open edge then
+       hold the field of the OPPOSITE edge, and advection, diffusion and the
+       lateral sponge read that instead of the boundary values. Over sloping
+       terrain the opposite edge at the same height is rock at its surface
+       value. Called right after exec_scalars; refills only the scalars. */
+    if (!sw_openbc)
+        return;
+
+    auto& gd = grid.get_grid_data();
+    auto& md = master.get_MPI_data();
+
+    for (auto& fld : slist)
+    {
+        auto set = [&](std::vector<TF>& lbc, const Lbc_location location)
+        {
+            set_lbc_gcs(
+                    fields.ap.at(fld)->fld.data(), lbc.data(),
+                    gd.igc, n_sponge,
+                    gd.istart, gd.iend, gd.jstart, gd.jend,
+                    gd.kstart, gd.kend,
+                    gd.icells, gd.jcells, gd.kcells,
+                    location);
+        };
+        if (md.mpicoordx == 0)
+            set(lbc_w.at(fld), Lbc_location::West);
+        if (md.mpicoordx == md.npx-1)
+            set(lbc_e.at(fld), Lbc_location::East);
+        if (md.mpicoordy == 0)
+            set(lbc_s.at(fld), Lbc_location::South);
+        if (md.mpicoordy == md.npy-1)
+            set(lbc_n.at(fld), Lbc_location::North);
+    }
+}
+
+template <typename TF>
 void Boundary_lateral<TF>::set_ghost_cells(
         Timeloop<TF>& timeloop)
 {

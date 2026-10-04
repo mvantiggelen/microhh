@@ -54,6 +54,7 @@ class Boundary_lateral
         void init();
         void create(Input&, Timeloop<TF>&, Stats<TF>&, const std::string&);
         void set_ghost_cells(Timeloop<TF>&);
+        void set_ghost_cells_scalars();   // apply_lbc_ib_halos.py
         void exec_lateral_sponge(Stats<TF>&);
         void update_time_dependent(Timeloop<TF>&, const bool pres_fix=false);
         unsigned long get_time_limit(unsigned long);

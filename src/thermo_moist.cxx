@@ -1740,6 +1740,92 @@ void Thermo_moist<TF>::create(
 }
 
 
+// apply_basestate_air.py: host code, compiled in every build.
+template<typename TF>
+void Thermo_moist<TF>::set_basestate_air_levels(const std::vector<unsigned int>& k_air)
+{
+    /* apply_basestate_air.py. With an immersed boundary the terrain cells
+       hold the surface value (blank solid) or an IB mirror value, so their
+       slab means are not those of the air. On a slope every level the
+       terrain cuts through then gets a reference thv that is wrong for the
+       air at that height: in a 5 deg slope test the air started to flow
+       up-slope everywhere, at all heights, within a minute. Store the first
+       air level per column; swupdatebasestate then averages over air only. */
+    bs_k_air = k_air;
+}
+
+template<typename TF>
+void Thermo_moist<TF>::calc_basestate_air_means()
+{
+    if (bs_k_air.empty())
+        return;
+
+    auto& gd = grid.get_grid_data();
+    const int kc = gd.kcells;
+    bs_thl_air = fields.sp.at("thl")->fld_mean;
+    bs_qt_air  = fields.sp.at("qt") ->fld_mean;
+
+    // Sums and counts over the air cells, per level, over all processes.
+    std::vector<TF> acc(3*kc, TF(0));
+    const TF* const thl = fields.sp.at("thl")->fld.data();
+    const TF* const qt  = fields.sp.at("qt") ->fld.data();
+    for (int k=gd.kstart; k<gd.kend; ++k)
+        for (int j=gd.jstart; j<gd.jend; ++j)
+            for (int i=gd.istart; i<gd.iend; ++i)
+            {
+                const int ij = i + j*gd.icells;
+                if (k < int(bs_k_air[ij]))
+                    continue;
+                const int ijk = ij + k*gd.ijcells;
+                acc[k]      += thl[ijk];
+                acc[k+kc]   += qt[ijk];
+                acc[k+2*kc] += TF(1);
+            }
+    master.sum(acc.data(), 3*kc);
+
+    // Air-only means where a level has air; the lowest two such levels
+    // give the linear extrapolation below (rock-only levels and kstart-1).
+    int k0 = -1, k1 = -1;
+    for (int k=gd.kstart; k<gd.kend; ++k)
+        if (acc[k+2*kc] > TF(0))
+        {
+            bs_thl_air[k] = acc[k]      / acc[k+2*kc];
+            bs_qt_air[k]  = acc[k+kc]   / acc[k+2*kc];
+            if (k0 < 0)
+                k0 = k;
+            else if (k1 < 0)
+                k1 = k;
+        }
+    if (k0 < 0 || k1 < 0)
+        return;
+
+    const TF dthl = (bs_thl_air[k1] - bs_thl_air[k0]) / (gd.z[k1] - gd.z[k0]);
+    const TF dqt  = (bs_qt_air[k1]  - bs_qt_air[k0])  / (gd.z[k1] - gd.z[k0]);
+    for (int k=gd.kstart-1; k<k0; ++k)
+    {
+        bs_thl_air[k] = bs_thl_air[k0] + dthl * (gd.z[k] - gd.z[k0]);
+        bs_qt_air[k]  = std::max(TF(0), bs_qt_air[k0] + dqt * (gd.z[k] - gd.z[k0]));
+    }
+
+    if (!bs_air_reported)
+    {
+        master.print_message(
+                "Thermo: swupdatebasestate over the air only (immersed boundary): "
+                "levels %d .. %d below the lowest air extrapolated\n",
+                gd.kstart - gd.kgc, k0 - 1 - gd.kgc);
+        bs_air_reported = true;
+    }
+}
+
+template<typename TF>
+const TF* Thermo_moist<TF>::basestate_mean(const std::string& name)
+{
+    // apply_basestate_air.py: the air-only means when an IB set them.
+    if (!bs_k_air.empty() && !bs_thl_air.empty())
+        return (name == "thl") ? bs_thl_air.data() : bs_qt_air.data();
+    return fields.sp.at(name)->fld_mean.data();
+}
+
 #ifndef USECUDA
 template<typename TF>
 void Thermo_moist<TF>::exec(const double dt, Stats<TF>& stats)
@@ -1750,15 +1836,18 @@ void Thermo_moist<TF>::exec(const double dt, Stats<TF>& stats)
     auto tmp = fields.get_tmp();
 
     if (bs.swupdatebasestate)
+    {
+        calc_basestate_air_means();     // apply_basestate_air.py
         calc_base_state(
                 bs.pref.data(), bs.prefh.data(),
                 bs.rhoref.data(), bs.rhorefh.data(),
                 bs.thvref.data(), bs.thvrefh.data(),
                 bs.exnref.data(), bs.exnrefh.data(),
-                fields.sp.at("thl")->fld_mean.data(),
-                fields.sp.at("qt")->fld_mean.data(),
+                basestate_mean("thl"),
+                basestate_mean("qt"),
                 bs.pbot, gd.kstart, gd.kend,
                 gd.z.data(), gd.dz.data(), gd.dzh.data());
+    }
 
     // DEBUG/HACK/TESTING/...
     //std::fill(phydro_tod.begin(), phydro_tod.end(), bs.prefh[gd.kend]);
@@ -2002,6 +2091,7 @@ void Thermo_moist<TF>::get_thermo_field(
     {
         auto tmp = fields.get_tmp();
 
+        calc_basestate_air_means();     // apply_basestate_air.py
         calc_base_state(
                 base.pref.data(),
                 base.prefh.data(),
@@ -2011,8 +2101,8 @@ void Thermo_moist<TF>::get_thermo_field(
                 &tmp->fld[3*gd.kcells],
                 base.exnref.data(),
                 base.exnrefh.data(),
-                fields.sp.at("thl")->fld_mean.data(),
-                fields.sp.at("qt")->fld_mean.data(),
+                basestate_mean("thl"),     // apply_basestate_air.py
+                basestate_mean("qt"),
                 base.pbot,
                 gd.kstart,
                 gd.kend,

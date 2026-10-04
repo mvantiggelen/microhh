@@ -283,6 +283,93 @@ namespace Boundary_surface_kernels
         return zsl/zL;
     }
 
+    /*
+     * apply_obuk_newton_residual.py. Is zeta a root of the MOST relation
+     * zeta = term? The Newton loops below exit on a small STEP, and also
+     * when the finite-difference derivative drops below 1e-16 - which
+     * happens far out on the near-neutral tail (L ~ 1e8-1e9), where the
+     * residual is still O(1). That exit reported convergence, and since the
+     * next call starts from the previous L the false neutral answer stuck
+     * until Ri_b > 0.13 forced the clamp: the flux switched between a
+     * neutral and a strongly stable value (case019/020 hfss_ib jumps).
+     */
+    template<typename TF>
+    inline bool obuk_residual_ok(const TF zeta, const TF term)
+    {
+        return std::isfinite(zeta) && std::isfinite(term)
+            && std::abs(zeta - term) <= TF(1e-3)*(std::abs(zeta) + std::abs(term)) + TF(1e-10);
+    }
+
+    /*
+     * Bisection for the prescribed-flux relation
+     *     h(zeta) = zeta + kappa zsl B / (du fm)^3 = 0
+     * on the branch the sign of B allows (B < 0: stable, zeta > 0). As for
+     * solve_zL_bisect: without a sign change the extreme zeta of that branch,
+     * which is what the zL clamp returns anyway. apply_obuk_newton_residual.py
+     *
+     * On the stable side the relation can have TWO roots (fm falls with
+     * zeta, so kappa zsl |B| / (du fm)^3 can cross zeta twice): a weakly
+     * stable one, continuous with neutral, and a strongly stable one. The
+     * bracket is therefore taken at the FIRST sign change of a logarithmic
+     * scan from zeta = 1e-6 upward, which always selects the weakly stable
+     * root - the one a flux-driven surface layer reaches from neutral.
+     */
+    template<typename TF>
+    inline TF solve_zL_bisect_flux(
+            const TF du, const TF bfluxbot, const TF zsl, const TF z0m)
+    {
+        const TF eps = TF(1e-12);
+        TF lo, hi;
+        if (bfluxbot > TF(0)) { lo = Constants::zL_min<TF>; hi = -eps; }
+        else                  { lo = eps;                   hi = Constants::zL_max<TF>; }
+
+        auto h = [&](const TF zeta)
+        {
+            const TF L = zsl / zeta;
+            return zeta + Constants::kappa<TF> * zsl * bfluxbot
+                          / fm::pow3(du * most::fm(zsl, z0m, L));
+        };
+
+        if (bfluxbot <= TF(0))
+        {
+            // stable: the first sign change, scanning upward in log(zeta)
+            const int nscan = 64;
+            const TF z1 = TF(1e-6);
+            TF a = z1;
+            TF fa = h(a);
+            bool found = false;
+            for (int i = 1; i <= nscan && std::isfinite(fa); ++i)
+            {
+                const TF b = z1 * std::pow(hi/z1, TF(i)/TF(nscan));
+                const TF fb = h(b);
+                if (!std::isfinite(fb))
+                    break;
+                if (fa * fb <= TF(0)) { lo = a; hi = b; found = true; break; }
+                a = b;
+                fa = fb;
+            }
+            if (!found)
+                return zsl / (fa > TF(0) ? z1 : Constants::zL_max<TF>);
+        }
+
+        TF flo = h(lo);
+        TF fhi = h(hi);
+        if (!std::isfinite(flo) || !std::isfinite(fhi) || flo * fhi > TF(0))
+            return zsl / (bfluxbot > TF(0) ? Constants::zL_min<TF>
+                                           : Constants::zL_max<TF>);
+
+        for (int i = 0; i < 80; ++i)
+        {
+            const TF mid = TF(0.5) * (lo + hi);
+            const TF fmid = h(mid);
+            if (!std::isfinite(fmid))
+                break;
+            if (flo * fmid <= TF(0)) { hi = mid; fhi = fmid; }
+            else                     { lo = mid; flo = fmid; }
+        }
+        return zsl / (TF(0.5) * (lo + hi));
+    }
+
     template<typename TF>
     TF calc_obuk_noslip_flux_iterative(
             TF L, const TF du, TF bfluxbot, const TF zsl, const TF z0m)
@@ -368,6 +455,19 @@ namespace Boundary_surface_kernels
             #ifdef PRINT_RIB_L_ERRORS
             std::cout << "ERROR: no convergence Rib->L: du=" << du << ", B0=" << bfluxbot << ", z0m=" << z0m << " | returning L=" << L <<  std::endl;
             #endif
+        }
+
+        // apply_obuk_newton_residual.py: accept Newton's L only if it is a
+        // root; otherwise bisect on the branch the sign of B allows.
+        {
+            const TF zeta = zsl / L;
+            const TF term = -Constants::kappa<TF> * zsl * bfluxbot
+                          / fm::pow3(du * most::fm(zsl, z0m, L));
+            // stable (B < 0): always the scan, so that the weakly stable
+            // root is chosen whatever root Newton found from its start
+            if (!obuk_residual_ok(zeta, term) || L * bfluxbot > TF(0)
+                    || bfluxbot < TF(0))
+                L = solve_zL_bisect_flux<TF>(du, bfluxbot, zsl, z0m);
         }
 
         return zsl/std::min(std::max(zsl/L, Constants::zL_min<TF>), Constants::zL_max<TF>);
@@ -536,6 +636,18 @@ namespace Boundary_surface_kernels
          */
         if (L * db <= TF(0) || !std::isfinite(L))
             L = solve_zL_bisect<TF>(du, db, zsl, z0m, z0h);
+
+        // apply_obuk_newton_residual.py: and is it a ROOT? The derivative
+        // guard in the Newton loop exits on the near-neutral tail with the
+        // residual still O(1) (see obuk_residual_ok).
+        else
+        {
+            const TF zeta = zsl / L;
+            const TF term = Constants::kappa<TF> * zsl * db * most::fh(zsl, z0h, L)
+                          / fm::pow2(du * most::fm(zsl, z0m, L));
+            if (!obuk_residual_ok(zeta, term))
+                L = solve_zL_bisect<TF>(du, db, zsl, z0m, z0h);
+        }
 
         // Limits same as LUT solver:
         return zsl/std::min(std::max(zsl/L, Constants::zL_min<TF>), Constants::zL_max<TF>);
