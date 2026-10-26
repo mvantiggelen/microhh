@@ -153,7 +153,7 @@ def parse():
     p = argparse.ArgumentParser(description='idealised katabatic flow down a Greenland ice slope')
     p.add_argument('--outdir', required=True)
     p.add_argument('--inputs', default=os.path.join(HERE, 'greenland_20260724_inputs.json'),
-                   help='terrain and RACMO profiles (extract_inputs.py)')
+                   help='terrain and RACMO profiles, as JSON')
     p.add_argument('--racmo-time', type=int, default=43200,
                    help='RACMO time [s after the case start, 03 UTC] of the inflow profiles (43200 = 15 UTC)')
     p.add_argument('--dx', type=float, default=100.)

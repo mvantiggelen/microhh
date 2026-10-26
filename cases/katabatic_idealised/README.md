@@ -98,7 +98,6 @@ mid-slope, the weather station, foot); statistics.
 | `katabatic_idealised_init.py` | after `microhh init` in `ib/`: the initial katabatic layer over the whole terrain |
 | `katabatic_idealised_compare.py` | IB against rotated: profiles at the stations, the jet and the heat flux along the slope, time series (`compare/`) |
 | `greenland_20260724_inputs.json` | the terrain and the RACMO profiles of 24 Jul 2026 |
-| `extract_inputs.py` | how the JSON file was made, from a nested RACMO-driven MicroHH set-up (only needed for another day or place) |
 | `job.sh` | for either directory; at the end of `rotated/` it runs stage 2 (`KAT_STAGE2=1`, default); on SLURM, `KAT_CHAIN=1` also submits `ib/` |
 
 ## Run (one after the other)
