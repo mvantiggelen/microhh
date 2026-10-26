@@ -4833,7 +4833,8 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
             {
                 ghost.at("s").sbot.emplace(scalar.first, std::vector<TF>(ghost.at("s").nghost));
 
-                if (std::find(sbot_spatial_list.begin(), sbot_spatial_list.end(), scalar.first) != sbot_spatial_list.end())
+                if (std::find(sbot_spatial_list.begin(), sbot_spatial_list.end(), scalar.first)
+                        != sbot_spatial_list.end())
                 {
                     // Read 2D sbot into tmp field
                     auto tmp = fields.get_tmp();
@@ -6355,7 +6356,7 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
         column.get_column_locations(tower_i, tower_j);
         tower_t_end = -1.;
         tower_t_avg = 0.;
-        int ntot = column.get_n_columns();
+        const int ntot = column.get_n_columns();
         master.print_message(
                 "IB: virtual towers - %d tavg profile(s) at each of the %d "
                 "column(s), every [IB] tavg_interval\n", tower_nout, ntot);

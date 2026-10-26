@@ -1031,8 +1031,8 @@ namespace
                 }
 
         // Set ghost cells such that the velocity interpolated to the boundaries is zero
-        int ks = kstart;
-        int ke = kend-1;
+        const int ks = kstart;
+        const int ke = kend-1;
         for (int j=0; j<jcells; ++j)
             #pragma ivdep
             for (int i=0; i<icells; ++i)
@@ -1318,7 +1318,7 @@ namespace
                 }
         }
 
-        int k = kstart;
+        const int k = kstart;
         for (int j=jstart; j<jend; ++j)
             #pragma ivdep
             for (int i=istart; i<iend; ++i)

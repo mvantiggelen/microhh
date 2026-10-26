@@ -154,11 +154,13 @@ void Subdomain<TF>::create()
     auto find_half_level = [&](const TF z_target, const std::string& name)
     {
         for (int k=0; k<=gd.ktot; ++k)
-            if (is_equal(gd.zh[k + gd.kstart], z_target) || std::abs(gd.zh[k + gd.kstart] - z_target) < TF(1e-6) * gd.zsize)
+            if (is_equal(gd.zh[k + gd.kstart], z_target)
+                    || std::abs(gd.zh[k + gd.kstart] - z_target) < TF(1e-6) * gd.zsize)
                 return k;
 
         master.print_message(
-            "ERROR: [subdomain] " + name + "=" + std::to_string(z_target) + " is not a half level of the parent grid.\n");
+            "ERROR: [subdomain] " + name + "=" + std::to_string(z_target)
+            + " is not a half level of the parent grid.\n");
         throw std::runtime_error("Sub-domain vertical window not aligned with parent grid.");
     };
 
@@ -326,8 +328,10 @@ void Subdomain<TF>::create()
         std::vector<TF> z_bc(z.begin() + kstart, z.end());
         std::vector<TF> zh_bc(zh.begin() + kstarth, zh.end());
 
-        bc_buffer  = std::make_unique<NN_interpolator<TF>>(x_bc, y_bc, z_bc,  gd.x, gd.y, gd.z,  master, grid, sw_linear);
-        bc_bufferh = std::make_unique<NN_interpolator<TF>>(x_bc, y_bc, zh_bc, gd.x, gd.y, gd.zh, master, grid, sw_linear);
+        bc_buffer  = std::make_unique<NN_interpolator<TF>>(
+                x_bc, y_bc, z_bc,  gd.x, gd.y, gd.z,  master, grid, sw_linear);
+        bc_bufferh = std::make_unique<NN_interpolator<TF>>(
+                x_bc, y_bc, zh_bc, gd.x, gd.y, gd.zh, master, grid, sw_linear);
     }
 }
 
