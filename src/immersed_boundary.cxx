@@ -2206,7 +2206,8 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
     // Cache the base-state exner while a Thermo is in reach; T_2m_ib needs it
     // and exec_cross has no Thermo of its own. apply_ib_buoy.py: thermo buoy
     // has no exner (nor p, thv); its scalar is b itself.
-    const bool thermo_buoy = (thermo.get_switch() == Thermo_type::Buoy);
+    const bool thermo_buoy = (thermo.get_switch() == Thermo_type::Buoy
+                            || thermo.get_switch() == Thermo_type::Disabled);
     if (exner_ref.empty() && !thermo_buoy)
         exner_ref = thermo.get_basestate_vector("exner");
 
@@ -3366,7 +3367,8 @@ void Immersed_boundary<TF>::exec_scalar_flux(
     if (hfss_ij.size() == size_t(gd.ijcells))
     {
         // apply_ib_buoy.py: thermo buoy has no exner (and no thl flux).
-        const bool has_exn = (thermo.get_switch() != Thermo_type::Buoy);
+        const bool has_exn = (thermo.get_switch() != Thermo_type::Buoy
+                            && thermo.get_switch() != Thermo_type::Disabled);
         const std::vector<TF> exn_none;
         const std::vector<TF>& exn = has_exn
                 ? thermo.get_basestate_vector("exner") : exn_none;
@@ -6524,7 +6526,8 @@ void Immersed_boundary<TF>::exec_column(Column<TF>& column, Thermo<TF>& thermo)
     auto& gd = grid.get_grid_data();
 
     // apply_ib_buoy.py: thermo buoy has no exner.
-    if (exner_ref.empty() && thermo.get_switch() != Thermo_type::Buoy)
+    if (exner_ref.empty() && thermo.get_switch() != Thermo_type::Buoy
+            && thermo.get_switch() != Thermo_type::Disabled)
         exner_ref = thermo.get_basestate_vector("exner");
 
     // ---- the mask, as a 3-D field the column machinery can slice ----------
