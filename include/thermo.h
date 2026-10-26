@@ -100,7 +100,7 @@ class Thermo
 
         virtual void update_time_dependent(Timeloop<TF>&) = 0;
 
-        // apply_basestate_air.py: the first air level of every column (an
+        // The first air level of every column (an
         // immersed boundary), so an updated base state is built from the air
         // only. Thermo types without an updated base state ignore it.
         virtual void set_basestate_air_levels(const std::vector<unsigned int>&) {}

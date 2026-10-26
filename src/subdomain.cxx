@@ -85,7 +85,7 @@ Subdomain<TF>::Subdomain(
 
         savetime_bcs = inputin.get_item<int>("subdomain", "savetime_bcs", "");
 
-        // How the child's values are taken from the parent (patch 61):
+        // How the child's values are taken from the parent:
         // "nearest" (default, upstream) copies the parent cell, "linear" adds
         // limited slopes inside it (conservative, no staircase).
         const std::string interpolation = inputin.get_item<std::string>(

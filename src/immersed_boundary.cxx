@@ -112,7 +112,7 @@ namespace
             {
                 const int ij = i + j*icells;
 
-                // Default: exactly what the code did before this patch.
+                // Default: no canopy or soil resistance.
                 qt_bot [ij] = qsat_bot[ij];
                 ra_out [ij] = TF(0);
                 rs_out [ij] = TF(0);
@@ -174,7 +174,7 @@ namespace
                 f3_out [ij] = f3;
                 vpd_out[ij] = vpd;
 
-                // apply_ib_lsm_output.py. The canopy's share of g; zero for
+                // The canopy's share of g; zero for
                 // dew, which bypasses the stomata, and on ice, where cv = 0.
                 rsveg_out [ij] = rs_veg;
                 rssoil_out[ij] = rs_soil;
@@ -481,7 +481,7 @@ namespace
     namespace most = Monin_obukhov;
     namespace bsk = Boundary_surface_kernels;
 
-    // ---- apply_ib_z0_map.py: scalar roughness lengths ---------------------
+    // ---- scalar roughness lengths -------------------------------------------
     enum Z0h_code
     {
         Z0h_fixed = 0, Z0h_ratio = 1, Z0h_yang2008 = 2,
@@ -658,7 +658,7 @@ namespace
             const std::vector<TF>& wdn,
             const std::vector<TF>& wz0m, const std::vector<TF>& wz0h,
             const bool sw_stability, const bool sw_stab_vertical,
-            const TF* const restrict w,          // apply_ib_wall_slope.py
+            const TF* const restrict w,
             const std::vector<TF>& wnx, const std::vector<TF>& wny,
             const std::vector<TF>& wnz, const bool sw_slope,
             int& n_zl_clamped,
@@ -678,7 +678,7 @@ namespace
             TF du;
             if (sw_slope && waxis[m] == 2)
             {
-                // apply_ib_wall_slope.py: the speed PARALLEL to the local
+                // The speed PARALLEL to the local
                 // surface, |U - (U.n) n|, with n the DEM normal of this column.
                 const TF wc = TF(0.5) * (w[ijk] + w[ijk+kk]);
                 const TF un = uc*wnx[m] + vc*wny[m] + wc*wnz[m];
@@ -784,7 +784,7 @@ namespace
         wall.utan .resize(wall.n, TF(0));
     }
 
-    /* apply_ib_momentum_air_only.py. Removes from the tendency of every
+    /* Removes from the tendency of every
        FREE momentum point (u or v) the advective and the SGS momentum flux
        through each face of its control volume behind which the neighbouring
        point of the same component is NOT free (inside the terrain, a ghost
@@ -968,11 +968,11 @@ namespace
                         ++n_faces;
                     }
 
-                    // patch 51: the advective flux is KEPT. The 2i5 flux through the
+                    // The advective flux is KEPT. The 2i5 flux through the
                     // plane half a cell in front of a closed or solid face carries
                     // mass (the advecting velocity is half the free point's), so
                     // removing its momentum alone turns advection into a source
-                    // du/dt ~ -u|u|/dx that runs away on flow into a wall (case024).
+                    // du/dt ~ -u|u|/dx that runs away on flow into a wall.
                     // The momentum it carries into the terrain is the stagnation
                     // pressure on the wall below the grid scale: it is reported
                     // with the form drag (adv_col: force on the terrain per unit
@@ -992,7 +992,7 @@ namespace
             const TF* const restrict oth,        // the other horizontal one
             const TF* const restrict w,
             const TF* const restrict evisc,      // K on horizontal faces
-            const TF* const restrict evisc_v,    // K on vertical faces (apply_ib_sgs_generic.py)
+            const TF* const restrict evisc_v,    // K on vertical faces
             const std::vector<int>& wi, const std::vector<int>& wj,
             const std::vector<int>& wk, const std::vector<int>& waxis,
             const std::vector<int>& wsign, const std::vector<TF>& wda,
@@ -1004,9 +1004,9 @@ namespace
             const int comp, const bool sw_vert,
             TF& tau_max, TF& undo_max, int& n_bad,
             const int n, const int icells, const int ijcells,
-            std::vector<TF>* const tau_out = nullptr,   // apply_ib_flux_accum.py
-            const bool undo_no_floor = false,            // apply_ib_momentum_air_only.py
-            const std::vector<TF>* const wfac = nullptr) // apply_ib_momentum_air_only.py
+            std::vector<TF>* const tau_out = nullptr,
+            const bool undo_no_floor = false,
+            const std::vector<TF>* const wfac = nullptr)
     {
         const int ii = 1;
         const int jj = icells;
@@ -1122,7 +1122,7 @@ namespace
             if (uh > TF(Constants::dsmall))
                 tau = -ustar[mf] * ustar[mf] * (fc / uh);   // opposes the wind
 
-            // apply_ib_momentum_air_only.py: only the part of the box's
+            // Only the part of the box's
             // bottom that lies on rock (1/2 at a step edge).
             if (wfac && waxis[m] == 2)
                 tau *= (*wfac)[m];
@@ -1139,13 +1139,13 @@ namespace
             at[ijk] -= undo;
             at[ijk] += tau / wda[m];
 
-            // apply_ib_flux_accum.py: the stress applied, for the skin
+            // The stress applied, for the skin
             // friction diagnostic. Faces that skip to here keep zero.
             if (tau_out)
                 (*tau_out)[m] = tau;
         }
     }
-    // apply_ib_flux_bc.py. [IB] sbcbot=flux: L and u* from the surface
+    // [IB] sbcbot=flux: L and u* from the surface
     // buoyancy flux B, with the tangential speed wall_similarity_kernel
     // left in utan, the same clip of z/L as there. The Dirichlet L the
     // kernel found is the first guess of the iteration.
@@ -1175,7 +1175,7 @@ namespace
         }
     }
 
-    // apply_ib_flux_bc.py. [IB] sbcbot=flux: on every face that carries a
+    // [IB] sbcbot=flux: on every face that carries a
     // flux (floors, and risers with sw_scalar_flux_vertical), replace the
     // MOST flux wall_scalar_flux_kernel added by the prescribed one, so the
     // air cell gets -undo + F/da.
@@ -1204,7 +1204,7 @@ namespace
             std::vector<TF>& flux_out,
             const TF* const restrict a,
             const TF* const restrict evisc,      // K on horizontal faces
-            const TF* const restrict evisc_v,    // K on vertical faces (apply_ib_sgs_generic.py)
+            const TF* const restrict evisc_v,    // K on vertical faces
             const std::vector<TF>& phi_wall,
             const std::vector<int>& wi, const std::vector<int>& wj,
             const std::vector<int>& wk, const std::vector<int>& waxis,
@@ -1219,7 +1219,7 @@ namespace
             TF& ch_min, TF& ch_max, TF& src_max, TF& undo_max, int& n_bad,
             const bool sw_vert, const bool undo_only,
             const int n, const int icells, const int ijcells,
-            const std::vector<TF>* const a_face = nullptr)   // apply_ib_wall_sample.py
+            const std::vector<TF>* const a_face = nullptr)
     {
         const int ii = 1;
         const int jj = icells;
@@ -1322,7 +1322,7 @@ namespace
         for (int m=0; m<n; ++m)
         {
             // [IB] sw_wall_kinematic: the floor faces keep their projected
-            // terrain-following w (apply_ib_wall_kinematic.py).
+            // terrain-following w.
             if (keep_floor && waxis[m] == 2 && wsign[m] < 0)
                 continue;
 
@@ -1538,7 +1538,7 @@ namespace
         }
     }
 
-    // apply_ib_micro.py: a zero-gradient ghost cell, the inverse-distance
+    // a zero-gradient ghost cell, the inverse-distance
     // mean of the fluid interpolation points only (the boundary point of a
     // Dirichlet stencil, if any, is the last one and is left out).
     template<typename TF>
@@ -1734,7 +1734,6 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
             z0m_ib = inputin.get_item<TF>("IB", "z0m", "");
             z0h_ib = inputin.get_item<TF>("IB", "z0h", "");
 
-            // apply_ib_z0_map.py
             sw_z0m_map = inputin.get_item<bool>("IB", "sw_z0m_map", "", false);
             const std::string z0h_m = inputin.get_item<std::string>(
                     "IB", "z0h_model", "", "fixed");
@@ -1755,7 +1754,7 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
                     || z0h_model_land == Z0h_vantiggelen2023)
                 throw std::runtime_error(
                         "[IB] z0h_model=vantiggelen2023 is reserved but not "
-                        "implemented yet (apply_ib_z0_map.py): its equations "
+                        "implemented yet: its equations "
                         "still have to be added to scalar_roughness()");
         }
         else
@@ -1768,7 +1767,7 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         // the wall model has to read the same tPr rather than assume one.
         tPr_wm = inputin.get_item<TF>("diff", "tPr", "", TF(1./3.));
 
-        // Which K fields the diffusion operator uses (apply_ib_sgs_generic.py).
+        // Which K fields the diffusion operator uses.
         {
             const std::string swdiff_k = inputin.get_item<std::string>(
                     "diff", "swdiff", "", "0");
@@ -1798,13 +1797,13 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         // Mason's wall damping uses the height above the DOMAIN FLOOR, which
         // over terrain is not the distance to the wall. cs and swmason are
         // read here so the correction can reproduce what Diff_smag2 did and
-        // divide it out. See apply_ib_wall_mlen.py.
+        // divide it out.
         sw_strain_mlen = inputin.get_item<bool>(
                 "IB", "sw_strain_mlen", "", true);
         cs_ib = inputin.get_item<TF>("diff", "cs", "", TF(0.23));
         sw_mason_ib = inputin.get_item<bool>("diff", "swmason", "", true);
 
-        // [IB] sw_mason_wall - apply_ib_mason_wall.py. Diff_smag2 applies
+        // [IB] sw_mason_wall. Diff_smag2 applies
         // Mason with n = 2 when thermo is on and with n = 1 without
         // (calc_evisc / calc_evisc_neutral), and calc_evisc_anisotropic
         // always (n = 2, swmason is not read there).
@@ -1825,13 +1824,11 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         dn_probe_done = false;
         dnmax_ib = inputin.get_item<TF>("diff", "dnmax", "", TF(0.4));
 
-        // apply_ib_evisc_solid.py
         sw_evisc_solid_zero = inputin.get_item<bool>(
                 "IB", "sw_evisc_solid_zero", "", false);
         dn_probe_every = inputin.get_item<int>(
                 "IB", "dn_probe_every", "", 0);
 
-        // apply_ib_evisc_solid_cap.py
         {
             const std::string m = inputin.get_item<std::string>(
                     "IB", "evisc_solid", "",
@@ -1843,7 +1840,7 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
             else if (m == "cap")
                 evisc_solid_mode = 2;
             else if (m == "cap_last")
-                evisc_solid_mode = 3;    // apply_ib_evisc_cap_last.py
+                evisc_solid_mode = 3;
             else
                 throw std::runtime_error(
                         "[IB] evisc_solid must be off, zero, cap or cap_last");
@@ -1875,12 +1872,12 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         sw_impermeable = inputin.get_item<bool>(
                 "IB", "sw_impermeable", "", false);
 
-        // apply_ib_wall_slope.py: MOST on the sub-grid DEM surface of each
+        // MOST on the sub-grid DEM surface of each
         // floor face (wall-normal distance, tangential wind, area factor).
         sw_wall_slope = inputin.get_item<bool>("IB", "sw_wall_slope", "", false);
         wall_dn_min = inputin.get_item<TF>("IB", "wall_dn_min", "", TF(0.1));
 
-        // apply_ib_wall_sample.py: sample the wall model's input at
+        // Sample the wall model's input at
         // wall_sample_dz * dz along the surface normal (floor faces).
         sw_wall_sample = inputin.get_item<bool>("IB", "sw_wall_sample", "", false);
         wall_sample_dz = inputin.get_item<TF>("IB", "wall_sample_dz", "", TF(1.5));
@@ -1898,11 +1895,11 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
                     "surface.\n");
         }
 
-        // apply_ib_wall_kinematic.py: the kinematic (terrain-following)
+        // The kinematic (terrain-following)
         // condition w = u.grad(eta) on the floor faces, eta = z_s - zh(floor).
         sw_wall_kinematic = inputin.get_item<bool>("IB", "sw_wall_kinematic", "", false);
         sw_openbc_ib = inputin.get_item<bool>("boundary_lateral", "sw_openbc", "", false);
-        // apply_lbc_periodic_y.py (patch 54): open in x only, periodic in y.
+        // Open in x only, periodic in y.
         sw_openbc_ib_y = sw_openbc_ib && !inputin.get_item<bool>(
                 "boundary_lateral", "sw_periodic_y", "", false);
         sw_kin_export = sw_openbc_ib && inputin.get_item<bool>(
@@ -1944,7 +1941,7 @@ Immersed_boundary<TF>::~Immersed_boundary()
 
 
 #ifndef USECUDA
-// apply_ib_sgs_generic.py. The eddy diffusivity the diffusion operator used
+// The eddy diffusivity the diffusion operator used
 // for `name` ("u"/"v"/"w" for momentum, else a scalar), on horizontal faces
 // (k_h) and vertical faces (k_v), and the factor that turns it into what
 // diff_c applied (1/tPr for smag2 scalars, 1 otherwise). Without any SGS
@@ -1989,7 +1986,7 @@ void Immersed_boundary<TF>::get_sgs_k(
     k_h = k_v = tmp->fld.data();
 }
 
-// apply_ib_sgs_generic.py. Every K field the diffusion operator reads.
+// Every K field the diffusion operator reads.
 template<typename TF>
 std::vector<std::string> Immersed_boundary<TF>::sgs_k_fields()
 {
@@ -2011,7 +2008,7 @@ std::vector<std::string> Immersed_boundary<TF>::sgs_k_fields()
 template<typename TF>
 void Immersed_boundary<TF>::sample_wall(const TF* const restrict b, const std::vector<TF>& b_wall)
 {
-    /* apply_ib_wall_sample.py. For every floor face the wall model's input
+    /* For every floor face the wall model's input
        is taken at an image point a fixed distance d_s along the surface
        normal, d_s = max(wall_sample_dz * dz, dn), by trilinear interpolation
        of the resolved fields (as the velocity-reconstruction IBM of Senocak
@@ -2189,30 +2186,28 @@ void Immersed_boundary<TF>::sample_wall(const TF* const restrict b, const std::v
 template<typename TF>
 void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats)
 {
-    // apply_ib_column_guard.py. create_column is called from src/model.cxx
-    // (inserted by apply_ib_column_diag.py). If that call is missing, the
-    // column code compiles, [IB] columnlist is read, and nothing is ever
+    // create_column is called from src/model.cxx. If that call is missing,
+    // the column code compiles, [IB] columnlist is read, and nothing is ever
     // written - with no message at all. Refuse to run instead.
     if (!columnlist.empty() && !column_created)
         throw std::runtime_error(
                 "[IB] columnlist has " + std::to_string(columnlist.size())
                 + " name(s) but ib->create_column() was never called, so none "
-                  "of them would be written. src/model.cxx is missing the two "
-                  "lines apply_ib_column_diag.py inserts: 'ib->create_column("
-                  "*column);' after ib->create(...), and 'ib       ->exec_column("
-                  "*column, *thermo);' after boundary->exec_column. Run "
-                  "patches/check_tree.py on this tree.");
+                  "of them would be written. src/model.cxx must call "
+                  "'ib->create_column(*column);' after ib->create(...), and "
+                  "'ib->exec_column(*column, *thermo);' after "
+                  "boundary->exec_column.");
 
     // Cache the base-state exner while a Thermo is in reach; T_2m_ib needs it
-    // and exec_cross has no Thermo of its own. apply_ib_buoy.py: thermo buoy
-    // has no exner (nor p, thv); its scalar is b itself.
+    // and exec_cross has no Thermo of its own. Thermo buoy has no exner (nor
+    // p, thv), its scalar is b itself; without thermo there is no base state.
     const bool thermo_buoy = (thermo.get_switch() == Thermo_type::Buoy
                             || thermo.get_switch() == Thermo_type::Disabled);
     if (exner_ref.empty() && !thermo_buoy)
         exner_ref = thermo.get_basestate_vector("exner");
 
-    // apply_ib_seb.py: put the surface energy balance's Ts back over the
-    // prescribed surface condition (update_time_dependent interpolated RACMO
+    // Put the surface energy balance's Ts back over the
+    // prescribed surface condition (update_time_dependent interpolated the input
     // over it), before the stability below and the scalar ghost cells read it.
     if (sw_seb && seb_initialized)
     {
@@ -2247,7 +2242,7 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
         buoy = fields.get_tmp();
         thermo.get_thermo_field(*buoy, "b", false, false);
 
-        // apply_ib_buoy.py: with thermo buoy the prognostic scalar is the
+        // With thermo buoy the prognostic scalar is the
         // buoyancy b; the wall b and the wall buoyancy flux are those of b.
         if (thermo_buoy)
         {
@@ -2279,7 +2274,7 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
             b_wall[m] = Constants::grav<TF> * (thv_w - thvref[k]) / thvref[k];
         }
 
-        // apply_ib_flux_bc.py: the surface buoyancy flux of the prescribed
+        // The surface buoyancy flux of the prescribed
         // thl and qt fluxes, B = g/thv (F_thl (1 + 0.61 qt) + 0.61 thl F_qt),
         // with thl and qt of the first air cell.
         if (sw_ib_flux)
@@ -2305,7 +2300,7 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
     // nullptr is safe: the kernel only dereferences b when sw_stability.
     const TF* b_ptr = sw_stability ? buoy->fld.data() : nullptr;
 
-    // apply_ib_z0_map.py: z0h and z0q from the previous call's u* and flux.
+    // z0h and z0q from the previous call's u* and flux.
     if (z0h_model_ice >= Z0h_yang2008 || z0h_model_land >= Z0h_yang2008)
     {
         const std::vector<TF>* fthl =
@@ -2365,7 +2360,7 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
             wall.n, gd.icells, gd.ijcells);
     n_zl_clamped_last = n_zl_clamped;
 
-    // apply_ib_wall_sample.py: u* and L from the image point instead. The
+    // u* and L from the image point instead. The
     // first-cell pass above is kept for wall.utan (the ghost-cell blend
     // describes the first cell) and for every face without a usable image.
     if (sw_wall_sample)
@@ -2400,7 +2395,7 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
     if (sw_stability)
         fields.release_tmp(buoy);
 
-    // apply_ib_flux_bc.py: with a prescribed flux, L and u* follow from the
+    // With a prescribed flux, L and u* follow from the
     // surface buoyancy flux, not from the wall value; then the surface value
     // that goes with the flux, for the ghost cells, the blanked terrain and
     // the diagnostics.
@@ -2411,7 +2406,7 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
             int n_clamped_flux = 0;
             wall_obuk_flux_kernel<TF>(
                     wall.ustar, wall.obuk,
-                    sw_wall_sample ? wall_du_s : wall.utan,   // apply_ib_wall_sample.py
+                    sw_wall_sample ? wall_du_s : wall.utan,
                     bflux_wall,
                     wall.axis, wall_dn_flux(), wall.z0m, sw_wall_stability_vertical,
                     n_clamped_flux, wall.n);
@@ -2420,7 +2415,7 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
         ib_flux_to_sbot();
     }
 
-    // The wall-normal K the operator used (apply_ib_sgs_generic.py).
+    // The wall-normal K the operator used.
     std::shared_ptr<Field3d<TF>> evisc_tmp;
 
     auto fill = [&](const std::string& name, const TF visc, const bool scalar)
@@ -2462,7 +2457,7 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
 template<typename TF>
 TF Immersed_boundary<TF>::ib_flux_presc(const std::string& name, const int ij) const
 {
-    // apply_ib_flux_bc.py: the prescribed kinematic flux of a column.
+    // The prescribed kinematic flux of a column.
     auto it = flux_2d.find(name);
     return (it != flux_2d.end()) ? it->second[ij] : sbc.at(name);
 }
@@ -2470,7 +2465,7 @@ TF Immersed_boundary<TF>::ib_flux_presc(const std::string& name, const int ij) c
 template<typename TF>
 void Immersed_boundary<TF>::ib_flux_to_sbot()
 {
-    /* apply_ib_flux_bc.py. With sbcbot=flux the surface value is not given.
+    /* With sbcbot=flux the surface value is not given.
        Diagnose it from the flux and the exchange coefficient of the floor
        face, phi_s = phi_1 + F / (u* f_h), as the inverse of the flux the
        Dirichlet path would apply, and put it where the wall value goes:
@@ -2510,7 +2505,7 @@ void Immersed_boundary<TF>::ib_flux_to_sbot()
                 d_lo = std::min(d_lo, d);
                 d_hi = std::max(d_hi, d);
             }
-            // apply_ib_wall_sample.py: relative to the value the flux used
+            // Relative to the value the flux used
             const bool samp = sw_wall_sample && wall_s_s.count(name);
             s2[ij] = (samp ? wall_s_s.at(name)[m] : fld[ijk]) + d;
         }
@@ -2564,12 +2559,12 @@ void Immersed_boundary<TF>::sbot_2d_to_ghosts()
 template<typename TF>
 void Immersed_boundary<TF>::update_time_dependent(Timeloop<TF>& timeloop)
 {
-    // apply_ib_seb.py: the surface energy balance integrates over the full
+    // The surface energy balance integrates over the full
     // step, starting from the state at substep 0.
     seb_dt = timeloop.get_dt();
     seb_substep = timeloop.get_substep();
 
-    // apply_ib_flux_bc.py: with sbcbot=flux the files are fluxes, and
+    // With sbcbot=flux the files are fluxes, and
     // sbot_2d is the diagnosed surface value.
     std::map<std::string, std::vector<TF>>& sbot_tdep = sw_ib_flux ? flux_2d : sbot_2d;
 
@@ -2684,7 +2679,7 @@ void Immersed_boundary<TF>::exec_vegetation(
                 "saturated surface humidity q_sat(Ts) is its starting point");
 
     // Downward shortwave at the surface. With [radiation] swradiation=
-    // prescribed this is the RACMO series; with rrtmgp it is the computed
+    // prescribed this is the input series; with rrtmgp it is the computed
     // field. Nothing here needs to know which.
     std::vector<TF>& sw_dn = radiation.get_surface_radiation("sw_down");
 
@@ -2705,7 +2700,7 @@ void Immersed_boundary<TF>::exec_vegetation(
             veg_gD.data(),
             veg_f2.data(), veg_f2b.data(),
             pref.data(), exnref.data(),
-            wall_floor_ij, wall.k, wall_dn_flux(), wall.z0q,   // z0q: apply_ib_z0_map.py; dn: apply_ib_wall_sample.py
+            wall_floor_ij, wall.k, wall_dn_flux(), wall.z0q,
             wall.ustar, wall.obuk,
             gd.istart, gd.iend, gd.jstart, gd.jend,
             gd.icells, gd.ijcells);
@@ -2743,7 +2738,7 @@ void Immersed_boundary<TF>::exec_vegetation(
 template<typename TF>
 void Immersed_boundary<TF>::create_seb(Netcdf_handle& input_nc)
 {
-    /* apply_ib_seb.py. Everything the surface energy balance needs that does
+    /* Everything the surface energy balance needs that does
        not change in time: which columns take part, their albedo and skin
        conductivity, and the thermal properties of their soil. */
     if (!sw_seb)
@@ -2778,7 +2773,7 @@ void Immersed_boundary<TF>::create_seb(Netcdf_handle& input_nc)
         boundary_cyclic.exec_2d(dst.data());
     };
 
-    // ---- which columns: ice keeps RACMO's Ts, water is a mixed layer -----
+    // ---- which columns: ice keeps the input Ts, water is a mixed layer ----
     std::vector<TF> ice, water(gd.ijcells, TF(0));
     load_2d(ice, "ib_ice");
     const bool has_water = file_exists("ib_water.0000000");
@@ -2929,11 +2924,11 @@ void Immersed_boundary<TF>::create_seb(Netcdf_handle& input_nc)
 template<typename TF>
 void Immersed_boundary<TF>::seb_to_sbot()
 {
-    /* apply_ib_seb.py. The surface temperature of the SEB columns, and the
+    /* The surface temperature of the SEB columns, and the
        saturated humidity at it, written over the 2-D surface condition, so
        that the wall model (stability), the scalar ghost cells and the canopy
        all see the same surface. exec_wall_model calls it every substep,
-       after update_time_dependent has interpolated RACMO in time over it. */
+       after update_time_dependent has interpolated the input in time over it. */
     if (!sw_seb || !seb_initialized || thermo_pref.empty() || exner_ref.empty())
         return;
 
@@ -2961,7 +2956,7 @@ void Immersed_boundary<TF>::seb_to_sbot()
 template<typename TF>
 void Immersed_boundary<TF>::get_surface_temperature(std::vector<TF>& t_s, Thermo<TF>& thermo)
 {
-    /* Patch 63 (apply_ib_radiation.py). The surface temperature of every
+    /* The surface temperature of every
        column, [K], with ghost cells (ijcells): the SEB skin temperature where
        the SEB has one (land and water; prescribed on ice, see exec_seb),
        otherwise the prescribed surface thl times the exner function of the
@@ -2995,7 +2990,7 @@ void Immersed_boundary<TF>::get_surface_temperature(std::vector<TF>& t_s, Thermo
 template<typename TF>
 void Immersed_boundary<TF>::exec_seb(Thermo<TF>& thermo, Radiation<TF>& radiation)
 {
-    /* apply_ib_seb.py. The surface energy balance of the land and water
+    /* The surface energy balance of the land and water
        columns, per substep, after exec_vegetation (which has set ra and the
        canopy and soil resistances from this substep's u* and L).
 
@@ -3091,7 +3086,7 @@ void Immersed_boundary<TF>::exec_seb(Thermo<TF>& thermo, Radiation<TF>& radiatio
 
             // The air at the first fluid cell, as the wall flux sees it:
             // H = rho cp exner (thl_s - thl_a) = rho cp (Ts - exner thl_a).
-            // apply_ib_wall_sample.py: the air the flux uses
+            // The air the flux uses
             const bool samp = sw_wall_sample && wall_samp_ok[m];
             const TF t_a = (samp ? wall_s_s.at("thl")[m] : thl[ijk]) * exn[k];
             const TF q_a = samp ? wall_s_s.at("qt")[m] : qt[ijk];
@@ -3278,7 +3273,7 @@ void Immersed_boundary<TF>::exec_scalar_flux(
     // the wall faces below will use. Must come after exec_wall_model, which
     // it does: model.cxx calls that first.
     exec_vegetation(thermo, radiation);
-    // apply_ib_seb.py: the surface temperature of the land and water
+    // The surface temperature of the land and water
     // columns, and the humidity at it, replace the prescribed values.
     exec_seb(thermo, radiation);
     if (sw_wall_model == IB_wall_type::Disabled || wall.n == 0)
@@ -3291,7 +3286,6 @@ void Immersed_boundary<TF>::exec_scalar_flux(
     // The SGS diffusivity the operator used, per scalar: smag2 evisc/tPr,
     // swanisotropic evisc_h/evisc_v over tPr, tke2 eviscs (evisc for
     // sgstke). Without any, the molecular value is what diff_c applied.
-    // See apply_ib_sgs_generic.py.
     std::shared_ptr<Field3d<TF>> evisc_tmp;
 
     const TF dxidxi = TF(1) / (gd.dx * gd.dx);
@@ -3323,7 +3317,7 @@ void Immersed_boundary<TF>::exec_scalar_flux(
         TF k_fac;
         get_sgs_k(name, k_h, k_v, k_fac, evisc_tmp);
 
-        // apply_ib_flux_bc.py: the prescribed flux of this face's column.
+        // The prescribed flux of this face's column.
         if (sw_ib_flux)
         {
             wall_flux_presc_face.resize(wall.n);
@@ -3339,8 +3333,8 @@ void Immersed_boundary<TF>::exec_scalar_flux(
                 k_h, k_v,
                 pw,
                 wall.i, wall.j, wall.k, wall.axis, wall.sign,
-                wall_dn_flux(), wall.da,                // apply_ib_wall_sample.py
-                (name == "qt" ? wall.z0q : wall.z0h),   // apply_ib_z0_map.py
+                wall_dn_flux(), wall.da,
+                (name == "qt" ? wall.z0q : wall.z0h),
                 wall.ustar, wall.obuk,
                 gd.dzi.data(), gd.dzhi.data(),
                 fields.rhoref.data(), fields.rhorefh.data(),
@@ -3348,11 +3342,11 @@ void Immersed_boundary<TF>::exec_scalar_flux(
                 k_fac, it.second->visc,
                 ch_min, ch_max, src_max, undo_max, n_bad,
                 sw_scalar_flux_vertical,
-                name == "sgstke" || sbc_noflux.count(name),   // apply_ib_micro.py
+                name == "sgstke" || sbc_noflux.count(name),
                 wall.n, gd.icells, gd.ijcells,
                 (sw_wall_sample && wall_s_s.count(name)) ? &wall_s_s.at(name) : nullptr);
 
-        // apply_ib_flux_bc.py: replace the MOST flux of the faces that
+        // Replace the MOST flux of the faces that
         // carry one by the prescribed flux (the kernel above is the
         // Dirichlet one, untouched).
         if (sw_ib_flux && name != "sgstke" && !sbc_noflux.count(name))
@@ -3366,7 +3360,7 @@ void Immersed_boundary<TF>::exec_scalar_flux(
 
     if (hfss_ij.size() == size_t(gd.ijcells))
     {
-        // apply_ib_buoy.py: thermo buoy has no exner (and no thl flux).
+        // Thermo buoy has no exner (and no thl flux).
         const bool has_exn = (thermo.get_switch() != Thermo_type::Buoy
                             && thermo.get_switch() != Thermo_type::Disabled);
         const std::vector<TF> exn_none;
@@ -3446,7 +3440,7 @@ void Immersed_boundary<TF>::exec_momentum_flux(Stats<TF>& stats)
 
     auto& gd = grid.get_grid_data();
 
-    // K_h and K_v of the momentum operator (apply_ib_sgs_generic.py).
+    // K_h and K_v of the momentum operator.
     std::shared_ptr<Field3d<TF>> evisc_tmp;
     const TF* evisc_ptr;
     const TF* evisc_v_ptr;
@@ -3465,7 +3459,7 @@ void Immersed_boundary<TF>::exec_momentum_flux(Stats<TF>& stats)
     const TF* const v = fields.mp.at("v")->fld.data();
     const TF* const w = fields.mp.at("w")->fld.data();
 
-    // apply_ib_flux_accum.py: zero, so that faces without a MOST stress
+    // Zero, so that faces without a MOST stress
     // (normal to the component, risers without sw_momentum_flux_vertical,
     // columns without a floor face) carry none.
     tau_skin_u.assign(wall_u.n, TF(0));
@@ -3515,7 +3509,7 @@ void Immersed_boundary<TF>::exec_momentum_flux(Stats<TF>& stats)
         if (undo_max > TF(20) * tau_max)
             master.print_message(
                     "IB: *** the stress being REMOVED is %.0fx the stress "
-                    "being applied. That is the over-coupling this patch "
+                    "being applied. That is the over-coupling this option "
                     "exists to fix, so a large ratio here is expected at t=0 - "
                     "but if it stays large the subtraction is not matching "
                     "diff_u/diff_v and the run will not survive it.\n",
@@ -3571,7 +3565,7 @@ void Immersed_boundary<TF>::exec_momentum()
     boundary_cyclic.exec(fields.mp.at("v")->fld.data());
     boundary_cyclic.exec(fields.mp.at("w")->fld.data());
 
-    // [IB] sw_blank_solid_tend (apply_ib_blank_solid_tend.py): the ghost
+    // [IB] sw_blank_solid_tend: the ghost
     // values are boundary conditions, so drop the tendencies the physics
     // put there (buoyancy from the extrapolated ghost scalars in
     // particular) before the pressure solve sees them. The ghost faces
@@ -3596,7 +3590,7 @@ void Immersed_boundary<TF>::exec_momentum()
 template <typename TF>
 void Immersed_boundary<TF>::exec_wall_kinematic()
 {
-    /* The kinematic condition of a sloping surface (apply_ib_wall_kinematic.py).
+    /* The kinematic condition of a sloping surface.
 
        Air does not cross the surface z = z_s(x,y): u.n = 0 with
        n ~ (-dz_s/dx, -dz_s/dy, 1), i.e. w = u dz_s/dx + v dz_s/dy on it
@@ -3623,8 +3617,8 @@ void Immersed_boundary<TF>::exec_wall_kinematic()
        direct-forcing IB. exec_impermeable leaves the floor faces alone:
        zeroing them after the projection would leave a divergence of
        w_s/dz in every floor cell. The net flux out of the terrain goes into
-       rock_flux, for the lateral boundary to let it out of the rock (patch 28);
-       without patch 28 its mean is removed from the floor faces. */
+       rock_flux, for the lateral boundary to let it out of the rock;
+       without sw_lbc_tf_periodic its mean is removed from the floor faces. */
 
     auto& gd = grid.get_grid_data();
 
@@ -3679,7 +3673,7 @@ void Immersed_boundary<TF>::exec_wall_kinematic()
     master.sum(acc, 3);
 
     // The terrain is out of the pressure solve, so the air has to take the
-    // net floor flux somewhere. Under patch 28 the lateral boundary lets it
+    // net floor flux somewhere. With sw_lbc_tf_periodic the lateral boundary lets it
     // out of the terrain and back into the air at the opposite edge (the
     // descent along a plane slope). Otherwise it is removed as a uniform
     // floor velocity: summed over all floor faces, u.grad(eta) is nonzero
@@ -3716,7 +3710,7 @@ void Immersed_boundary<TF>::exec_scalars()
 
     for (auto& it : fields.sp)
     {
-        // apply_ib_micro.py: zero gradient through the wall, i.e. the ghost
+        // Zero gradient through the wall, i.e. the ghost
         // cell takes the image value from the fluid points only.
         if (sbc_noflux.count(it.first))
         {
@@ -3751,7 +3745,7 @@ void Immersed_boundary<TF>::exec_scalars()
 template<typename TF>
 void Immersed_boundary<TF>::build_mason_wall()
 {
-    /* apply_ib_mason_wall.py. The factor that turns the closure's Mason
+    /* The factor that turns the closure's Mason
        length, damped with the height above the DOMAIN FLOOR, into the same
        length damped with the height above the LOCAL SURFACE:
 
@@ -3761,7 +3755,7 @@ void Immersed_boundary<TF>::build_mason_wall()
        d = max(z - dem, dz/2) with the IB z0m (map), l0 and n as Diff_smag2 uses them:
        cs (dx dy dz)^(1/3) for smag2, cs mlen0_h and cs mlen0_v for
        swanisotropic. The geometry is static, so f is built once. Cells
-       inside the terrain keep f = 1 (the cap of patch 26 handles them). */
+       inside the terrain keep f = 1 (evisc_solid_mode handles them). */
     auto& gd = grid.get_grid_data();
     const TF kappa = Constants::kappa<TF>;
     const TF n = mason_n;
@@ -3825,16 +3819,14 @@ template<typename TF>
 void Immersed_boundary<TF>::cap_evisc_solid(
         const std::vector<std::string>& k_names, const bool exchange)
 {
-    /* apply_ib_evisc_solid.py / apply_ib_evisc_solid_cap.py: evisc inside
-       the terrain (ghost cells included) is a by-product of the mirrored
-       ghost velocities, not turbulence. Mode 1 zeroes it (unstable,
-       case015); modes 2 and 3 cap each solid cell at the largest evisc of
+    /* evisc inside the terrain (ghost cells included) is a by-product of
+       the mirrored ghost velocities, not turbulence. Mode 1 zeroes it (this
+       was found to be unstable); modes 2 and 3 cap each solid cell at the largest evisc of
        its air neighbours, so the wall-normal velocities keep their damping.
        Mode 2 does this before the wall damping (Mason with the wall
-       distance, the MOST rescaling), mode 3 (apply_ib_evisc_cap_last.py)
-       after it, so that the terrain cannot keep the undamped value and set
-       the diffusion limit on dt (case023/024: 18-24 m2/s in the rock against
-       4.4 m2/s in the air). */
+       distance, the MOST rescaling), mode 3 after it, so that the terrain
+       cannot keep the undamped value and set the diffusion limit on dt (in
+       one test 18-24 m2/s in the rock against 4.4 m2/s in the air). */
     auto& gd = grid.get_grid_data();
     const int ic = gd.icells;
     const int kc = gd.ijcells;
@@ -3880,26 +3872,25 @@ void Immersed_boundary<TF>::exec_strain_most()
 
     // Every K field the diffusion operator reads: smag2 evisc, swanisotropic
     // evisc_h + evisc_v, tke2 evisc + eviscs. The cap and the MOST rescaling
-    // below are applied to each of them alike. See apply_ib_sgs_generic.py.
+    // below are applied to each of them alike.
     const std::vector<std::string> k_names = sgs_k_fields();
     if (k_names.empty())
         return;
 
     auto& gd = grid.get_grid_data();
 
-    // ---- apply_ib_evisc_solid.py -----------------------------------------
+    // ---- evisc inside the terrain ------------------------------------------
     // evisc inside the terrain (ghost cells included) is a by-product of the
     // mirrored ghost velocities, not turbulence. It is removed so that the
-    // diffusion limit on dt is set by the air. See the patch docstring for
-    // why this cannot change a wall flux.
-    // apply_ib_evisc_solid_cap.py: mode 1 = zero (unstable, case015),
+    // diffusion limit on dt is set by the air. The wall fluxes do not use it.
+    // Mode 1 = zero (found to be unstable),
     // mode 2 = cap each solid cell at the largest evisc of its air
     // neighbours, so the wall-normal velocities keep their damping.
     if ((evisc_solid_mode == 1 || evisc_solid_mode == 2)
             && dem.size() == size_t(gd.ijcells))
         cap_evisc_solid(k_names, !sw_strain_most);
 
-    // ---- apply_ib_mason_wall.py ---------------------------------------------
+    // ---- Mason wall damping -------------------------------------------------
     // Mason's damping with the height above the local surface. Only where
     // the closure applies Mason at all: smag2 with swmason, swanisotropic
     // always (upstream), never tke2.
@@ -3933,7 +3924,7 @@ void Immersed_boundary<TF>::exec_strain_most()
             scale("evisc", mason_f_h);
     }
 
-    // apply_ib_evisc_cap_last.py: cap the terrain AFTER the wall damping, so
+    // Cap the terrain AFTER the wall damping, so
     // that no solid cell exceeds the final evisc of its air neighbours.
     if (!sw_strain_most)
     {
@@ -3999,7 +3990,7 @@ void Immersed_boundary<TF>::exec_strain_most()
 
         // Mason damped the mixing length with the height above the FLAT
         // FLOOR. Replace that distance by the distance to the wall this cell
-        // actually sits against. See apply_ib_wall_mlen.py. The expression is
+        // actually sits against. The expression is
         // smag2's isotropic length, so it is applied for that closure only.
         if (sw_strain_mlen && sgs_kind == 0 && !sw_mason_wall)
         {
@@ -4029,7 +4020,7 @@ void Immersed_boundary<TF>::exec_strain_most()
     for (const std::string& k_name : k_names)
         boundary_cyclic.exec(fields.sd.at(k_name)->fld.data());
 
-    // apply_ib_evisc_cap_last.py: the cap after Mason and the MOST rescaling
+    // The cap after Mason and the MOST rescaling
     // (the halos are current, so a cell at the subdomain edge sees its air
     // neighbours on the next rank).
     if (evisc_solid_mode == 3 && dem.size() == size_t(gd.ijcells))
@@ -4040,15 +4031,15 @@ void Immersed_boundary<TF>::exec_strain_most()
     // between kstart and kend - it has no idea the immersed boundary exists -
     // so the timestep can be set by a cell inside the terrain, or by a fluid
     // cell that no wall correction ever visits. Both look exactly like "the
-    // wall patches did not work". See apply_ib_dnum_probe.py.
+    // wall corrections did not work".
     // n_cells > 0 matters: exec_strain_most runs BEFORE the first
     // exec_wall_model, so at the very first substep wall.ustar is still zero,
     // every face is skipped, and evisc is the UNCORRECTED field. Probing then
-    // would measure the state the patches were meant to change. Waiting for
+    // would measure the state the corrections are meant to change. Waiting for
     // the first call that actually corrected something gets the right
     // snapshot - and it is the same call that prints the rescaling report.
-    // apply_ib_evisc_solid.py: optionally repeat the probe every
-    // dn_probe_every calls, so a long run shows where the limit moves.
+    // Optionally repeat the probe every dn_probe_every calls, so a long run
+    // shows where the limit moves.
     ++dn_probe_calls;
     const bool probe_again = (dn_probe_every > 0 && dn_probe_done
                               && (dn_probe_calls % dn_probe_every) == 0);
@@ -4153,7 +4144,7 @@ void Immersed_boundary<TF>::exec_strain_most()
         master.print_message(
                 "IB: expect DNUM to stop being set by the wall cells. If dt "
                 "does not rise, the diffusion limit has moved into the "
-                "interior and this patch has done all it can.\n");
+                "interior and this option has done all it can.\n");
     }
 }
 template<typename TF>
@@ -4211,7 +4202,7 @@ void Immersed_boundary<TF>::blank_solid_momentum()
 template<typename TF>
 void Immersed_boundary<TF>::exec_blank_solid_tend()
 {
-    /* apply_ib_blank_solid_tend.py. blank_solid_* reset the inside of the
+    /* blank_solid_* reset the inside of the
        terrain at the START of the IB calls, but the RK update then adds
        that substep's tendencies there (advection, diffusion, buoyancy,
        pressure), so until the next reset the terrain holds non-physical
@@ -4285,7 +4276,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
         }
 
         // Process boundary values per scalar. A scalar WITHOUT [IB] sbot[]
-        // (patch 62, apply_ib_micro.py) gets no wall flux and zero-gradient
+        // gets no wall flux and zero-gradient
         // ghost cells: the hydrometeors of a microphysics scheme, which reach
         // the surface by sedimentation, not by turbulent exchange.
         for (auto& it : fields.sp)
@@ -4307,7 +4298,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                 names += (names.empty() ? "" : ", ") + n;
             master.print_message(
                     "IB: no [IB] sbot[] for %s - no wall flux, zero-gradient "
-                    "ghost cells (patch 62)\n", names.c_str());
+                    "ghost cells\n", names.c_str());
         }
 
         // Read the scalars with spatial patterns
@@ -4329,7 +4320,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
         }
     }
 
-    // [IB] sw_vegetation - apply_ib_vegetation.py. Off by default, and with
+    // [IB] sw_vegetation. Off by default, and with
     // rs_veg_min = rs_soil_min = 0 it is bit-identical to off.
     sw_vegetation = inputin.get_item<bool>("IB", "sw_vegetation", "", false);
     veg_reported  = false;
@@ -4362,7 +4353,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
         veg_f2b        .assign(gd.ijcells, TF(1));
     }
 
-    // [IB] sw_seb - apply_ib_seb.py. The surface energy balance on the
+    // [IB] sw_seb. The surface energy balance on the
     // non-glaciated columns. Off by default and bit-identical when off.
     sw_seb = inputin.get_item<bool>("IB", "sw_seb", "", false);
     if (sw_seb)
@@ -4399,7 +4390,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                     "[IB] seb_lake_mld must be > 0 and seb_cs_land >= 0");
     }
 
-    // [IB] sbcbot=flux with the wall model - apply_ib_flux_bc.py. Upstream
+    // [IB] sbcbot=flux with the wall model. Upstream
     // turns a flux into a ghost-cell gradient with the MOLECULAR viscosity,
     // which has no meaning next to the wall model. Here the wall model
     // takes the flux itself; the ghost cells get the MOST surface value.
@@ -4421,20 +4412,20 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                 "IB: sbcbot=flux - [IB] sbot[] and <scalar>_sbot are kinematic "
                 "surface fluxes per unit surface area (positive upward); L "
                 "follows from them, the wall value is diagnosed from MOST "
-                "(apply_ib_flux_bc.py)\n");
+                "\n");
     }
 
     sw_blank_solid = inputin.get_item<bool>("IB", "sw_blank_solid", "", false);
-    // [IB] sw_blank_solid_tend - apply_ib_blank_solid_tend.py
+    // [IB] sw_blank_solid_tend
     sw_blank_solid_tend = inputin.get_item<bool>("IB", "sw_blank_solid_tend", "", false);
     if (sw_blank_solid_tend && !sw_blank_solid)
         throw std::runtime_error("[IB] sw_blank_solid_tend needs sw_blank_solid=true");
 
-    // [IB] sw_advec_wall - apply_ib_advec_wall.py
+    // [IB] sw_advec_wall
     sw_advec_wall = inputin.get_item<bool>("IB", "sw_advec_wall", "", false);
     advec_wall_reported = false;
 
-    // [IB] sw_advec_wall_conserve - apply_ib_advec_wall_conserve.py
+    // [IB] sw_advec_wall_conserve
     sw_advec_wall_conserve = inputin.get_item<bool>(
             "IB", "sw_advec_wall_conserve", "", true);
     if (sw_advec_wall)
@@ -4449,8 +4440,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
         // kernel (advec_monotonic.h advec_s_lim) as 2i5, so the limited
         // branch of the correction is exact for it too. Its unlimited scalar
         // flux (6th-order centred, 2nd-order vertical) is not reproduced, so
-        // 2i62 is accepted only when every scalar is limited (patch 29,
-        // apply_ib_advec_wall_2i62.py).
+        // 2i62 is accepted only when every scalar is limited.
         bool all_limited = true;
         for (auto& it : fields.sp)
             if (std::find(advec_wall_limited.begin(), advec_wall_limited.end(), it.first)
@@ -4465,7 +4455,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                     + (swadvec == "2i62" ? " and an unlimited scalar" : ""));
     }
 
-    // apply_ib_wall_kinematic.py: with air crossing the floor faces, the
+    // With air crossing the floor faces, the
     // advective flux there has to carry the AIR value. The 2i5
     // stencil would interpolate the ghost value in (2*s_wall - s_air), a
     // spurious surface flux w_s*(s_ghost - s_air) of the order of the real one.
@@ -4488,12 +4478,12 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
 
     // Terrain-following xy cross-sections. The heights live here rather than
     // in the crosslist names, so that changing them does not mean editing
-    // [cross] crosslist. See apply_ib_tf_cross.py.
+    // [cross] crosslist.
     sw_tf_cross = inputin.get_item<bool>("IB", "sw_tf_cross", "", false);
     tf_cross_heights = inputin.get_list<TF>(
             "IB", "tf_cross_heights", "", std::vector<TF>());
 
-    // Time statistics on terrain-following planes (apply_ib_tavg.py).
+    // Time statistics on terrain-following planes.
     tavg_interval = inputin.get_item<TF>("IB", "tavg_interval", "", TF(0));
     tavg_cm = inputin.get_item<TF>("IB", "tavg_cm", "", TF(0.12));
     tavg_mlen0_v = inputin.get_item<TF>("diff", "mlen0_v", "", TF(-1));
@@ -4517,12 +4507,12 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
     }
 
 
-    // [IB] sw_flux_accum - apply_ib_flux_accum.py. The surface fluxes and the
+    // [IB] sw_flux_accum. The surface fluxes and the
     // drag as means over the output interval, from RK-weighted cumulative
     // sums, instead of the value at the output time.
     sw_flux_accum = inputin.get_item<bool>("IB", "sw_flux_accum", "", false);
 
-    // [IB] sw_momentum_air_only - apply_ib_momentum_air_only.py. Only the
+    // [IB] sw_momentum_air_only. Only the
     // MOST stress and the pressure exchange momentum with the terrain.
     sw_momentum_air_only = inputin.get_item<bool>("IB", "sw_momentum_air_only", "", false);
     air_only_reported = false;
@@ -4574,7 +4564,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                     s = a.canonical;
                     break;
                 }
-            // <scalar>fluxbot_ib, as in the crosslist (apply_ib_flux_accum.py).
+            // <scalar>fluxbot_ib, as in the crosslist.
             if (has_ending(s, "fluxbot_ib") && !has_ending(s, "_fluxbot_ib")
                     && fields.sp.find(s.substr(0, s.length()-10)) != fields.sp.end())
                 s = s.substr(0, s.length()-10) + "_fluxbot_ib";
@@ -4590,7 +4580,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
     {
 
         // Terrain-following xy planes: <var>_tf (one plane per
-        // [IB] tf_cross_heights) or <var>_tf<h>. See apply_ib_tf_cross.py.
+        // [IB] tf_cross_heights) or <var>_tf<h>.
         if (sw_tf_cross)
         {
             const size_t p_tf = it->rfind("_tf");
@@ -4603,7 +4593,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                 const std::string var = it->substr(0, p_tf);
                 const bool known_var = (var == "u" || var == "v" || var == "w"
                         || var == "wspd" || var == "wdir"
-                        || var == "sgs_tke"         // apply_ib_tavg.py
+                        || var == "sgs_tke"
                         || fields.sp.find(var) != fields.sp.end());
                 const bool have_h = (p_tf + 3 < it->size())
                         || !tf_cross_heights.empty();
@@ -4617,7 +4607,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
         }
 
         // Terrain-following surface diagnostics: taken verbatim, no <scalar>
-        // prefix to strip. See apply_ib_surface_diag.py.
+        // prefix to strip.
         {
             static const char* diag_names[] = {
                 "u_ib1", "v_ib1", "thl_ib1", "qt_ib1",
@@ -4629,7 +4619,7 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                 "hfss_ib", "hfls_ib",
                 "hfss_ib_floor", "hfss_ib_wall",
                 "hfls_ib_floor", "hfls_ib_wall",
-                // apply_ib_flux_accum.py: form drag and skin friction
+                // Form drag and skin friction
                 "taux_form_ib", "tauy_form_ib",
                 "taux_skin_ib", "tauy_skin_ib",
                 "taux_skin_ib_floor", "tauy_skin_ib_floor",
@@ -4640,21 +4630,15 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                 "obuk_ib_floor", "obuk_ib_wall",
                 "ch_ib_floor", "ch_ib_wall",
                 "nface", "nface_floor", "nface_wall", "area_wall",
-                // apply_ib_vegetation.py
                 "ra_ib", "rs_ib", "f1_ib", "f3_ib", "vpd_ib", "qt_veg_ib",
-                // apply_ib_lsm_output.py
                 "rs_veg_ib", "rs_soil_ib", "ftr_ib",
                 "c_veg_ib", "lai_ib", "f2_ib", "f2b_ib", "theta_soil_top_ib",
-                // apply_ib_z0_map.py
                 "z0m_ib", "z0h_ib", "z0q_ib",
                 "z0m_ib_floor", "z0h_ib_floor", "z0q_ib_floor",
                 "z0m_ib_wall", "z0h_ib_wall", "z0q_ib_wall",
-                // apply_ib_wall_slope.py
                 "dn_ib", "dn_ib_floor", "dn_ib_wall",
-                // apply_ib_seb.py
                 "tskin_ib", "rnet_ib", "g_ib", "albedo_ib", "t_soil_top_ib",
                 "seb_class_ib",
-                // apply_ib_rad_output.py
                 "sw_dn_ib", "lw_dn_ib"};
             bool hit = false;
             for (const char* nm : diag_names)
@@ -4688,11 +4672,10 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
         }
 
         // <scalar>_fluxbot_ib, and the older spelling <scalar>fluxbot_ib
-        // (racmo_to_openbc.py writes that one). Both are stored as
+        // (older input generators write that one). Both are stored as
         // <scalar>_fluxbot_ib, the name the cross file has always had, so
-        // that every later step sees one spelling (apply_ib_flux_accum.py:
-        // the underscore form was left with "thl_" as the scalar and never
-        // written).
+        // that every later step sees one spelling (the underscore form was
+        // left with "thl_" as the scalar and never written).
         std::string scalar;
         if (has_ending(*it, "_fluxbot_ib"))
             scalar = it->substr(0, it->length() - 11);
@@ -4760,7 +4743,7 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                     for (int i=gd.iend; i<gd.icells; ++i)
                         dem[i + j*jj] = dem[(gd.iend-1) + j*jj];
 
-            // Not in y if y is periodic under open BCs (patch 54): the
+            // Not in y if y is periodic under open BCs: the
             // cyclic halo is the terrain there.
             const bool replicate_y = !(sw_openbc_ib && !sw_openbc_ib_y);
 
@@ -4913,7 +4896,7 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
             // need it to find the u* of the column they sit in.
             wall_floor_ij = wall_floor;
 
-            // ---- apply_ib_wall_slope.py ------------------------------------
+            // ---- sub-grid surface slope -------------------------------------
             // Per floor face: the DEM normal of its column, the wall-normal
             // distance from the cell centre to the sub-grid surface, and the
             // surface area per unit ground area. Without sw_wall_slope the
@@ -4938,7 +4921,7 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                     const int ij = wall.i[m] + wall.j[m]*gd.icells;
                     const int k  = wall.k[m];
 
-                    // Centred DEM gradient; the halo is filled (patch 1).
+                    // Centred DEM gradient; the halo is filled.
                     const TF sx = (dem[ij+1] - dem[ij-1]) / (TF(2)*gd.dx);
                     const TF sy = (dem[ij+gd.icells] - dem[ij-gd.icells]) / (TF(2)*gd.dy);
                     const TF nrm = std::sqrt(TF(1) + sx*sx + sy*sy);
@@ -4980,7 +4963,7 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                         double(std::acos(TF(1)/a_hi) * TF(180) / TF(M_PI)));
             }
 
-            // ---- apply_ib_wall_kinematic.py --------------------------------
+            // ---- kinematic condition ---------------------------------------
             // Per floor face: the gradient of eta = z_s - zh[k_floor], the
             // height of the sub-grid DEM surface above the face. Within one
             // staircase step grad(eta) = grad(z_s); across a riser eta jumps
@@ -5067,7 +5050,7 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                         n_kin[0], double(e_max), double(s_max), n_kin[1]);
             }
 
-            // ---- apply_ib_z0_map.py ----------------------------------------
+            // ---- roughness lengths -----------------------------------------
             {
                 auto& md_z0 = master.get_MPI_data();
 
@@ -5183,14 +5166,14 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                         double(zh_lo), double(zh_hi));
             }
 
-            // ---- [IB] sw_vegetation - apply_ib_vegetation.py --------------
+            // ---- [IB] sw_vegetation --------------
             if (sw_vegetation)
             {
                 /*
                  * The five per-column canopy parameters, as 2-D binaries in
                  * the same format as <scalar>_sbot.0000000. Ice columns are
                  * written with c_veg = 0 and rs_soil_min = 0, which makes
-                 * this patch a no-op there.
+                 * the canopy model a no-op there.
                  */
                 auto load_veg_2d = [&](std::vector<TF>& dst,
                                        const std::string& nm)
@@ -5254,8 +5237,8 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                  * level, read from theta_soil_<k>/t_soil_<k>.0000000 with k
                  * counting from the BOTTOM, the order soil_grid.cxx uses.
                  *
-                 * Static here: this is RACMO's soil at t=0, held for the
-                 * whole run. Patch 18 integrates it.
+                 * This is the initial soil state; [IB] sw_seb integrates
+                 * the temperature in time, otherwise it is held.
                  */
                 Netcdf_group& soil_group = input_nc.get_group("soil");
                 const int sk = veg_soil_ktot;
@@ -5278,8 +5261,8 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                 /*
                  * The van Genuchten table, from the same file and with the
                  * same variable names the LSM uses, so one table serves both.
-                 * Only theta_res/wp/fc/sat are needed here; patch 18 reads
-                 * gamma_sat, alpha, l and n from it as well.
+                 * Only theta_res/wp/fc/sat are needed here; gamma_sat, alpha,
+                 * l and n are read from it as well.
                  */
                 Netcdf_file nc_lut(
                         master, "van_genuchten_parameters.nc",
@@ -5311,7 +5294,7 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                  *       residual by THIS column's c_veg.
                  *
                  * Both were domain constants while the soil was one profile.
-                 * They are the whole reason for reading RACMO's soil: a
+                 * They are the whole reason for reading a soil per column: a
                  * column by the margin and a column on a dry ridge do not
                  * have the same stomatal closure, and a single f2 cannot say
                  * so.
@@ -5396,7 +5379,7 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                 wall_value_face.emplace(sp.first, std::vector<TF>(wall.n, TF(0)));
             }
 
-            // apply_ib_flux_bc.py: what was loaded into sbot_2d are fluxes.
+            // What was loaded into sbot_2d are fluxes.
             // sbot_2d becomes the surface value, first the air value above
             // (zero difference) until the wall model diagnoses it.
             if (sw_ib_flux)
@@ -5423,7 +5406,7 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
 
             if (sw_momentum_flux)
             {
-                // apply_ib_momentum_air_only.py: with [IB] sw_momentum_air_only
+                // With [IB] sw_momentum_air_only
                 // the wall lists use the same inside/outside test as the ghost
                 // cells and blank_u/blank_v (is_solid at the face: the DEM of
                 // the cell the face belongs to), instead of the DEM
@@ -5464,7 +5447,7 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                 map_floor(wall_u, wall_u_floor, 1, 0);
                 map_floor(wall_v, wall_v_floor, 0, 1);
 
-                // apply_ib_wall_slope.py: the stress acts on 1/cos(alpha)
+                // The stress acts on 1/cos(alpha)
                 // times the floor-face area of the column it takes u* from.
                 if (sw_wall_slope)
                 {
@@ -5486,7 +5469,6 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
                         "from, left on the operator's stress)\n",
                         wall_u.n, wall_v.n, nu_orphan, nv_orphan);
 
-                // apply_ib_momentum_air_only.py
                 if (sw_momentum_air_only)
                     build_momentum_air_only();
             }
@@ -5628,13 +5610,13 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
         }
 
         // [IB] sw_advec_wall: classify every face whose 2i5 stencil touches
-        // the terrain. See apply_ib_advec_wall.py and README.md section 10.
+        // the terrain.
         if (sw_advec_wall)
         {
             // Solid at scalar cell centres, halo included. is_solid() at a
             // cell centre is `z[k] <= dem[i,j]` (interp2_dem at a node returns
             // the node value), so the mask is taken straight from the DEM,
-            // which carries its halo (cyclic, or replicated with patch 1).
+            // which carries its halo (cyclic, or replicated with open LBCs).
             std::vector<char> solid(gd.ncells, 0);
             for (int k=gd.kstart; k<gd.kend; ++k)
                 for (int j=0; j<gd.jcells; ++j)
@@ -5740,7 +5722,6 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
         boundary_cyclic.exec_2d(k_dem.data());
     }
 
-    // apply_ib_seb.py
     create_seb(input_nc);
 }
 
@@ -5777,7 +5758,6 @@ namespace
 {
     // Meteorological wind direction: the direction the wind blows FROM, in
     // degrees clockwise from north. Not averageable - see the header of
-    // apply_ib_column_diag.py.
     template<typename TF>
     TF wind_from_deg(const TF u, const TF v)
     {
@@ -5853,7 +5833,7 @@ bool Immersed_boundary<TF>::calc_surface_diag(
             for (int i=0; i<gd.icells; ++i)
             {
                 const int ij = i + j*jj;
-                // 0-based INTERIOR level, as documented (apply_ib_kdem_diag.py)
+                // 0-based INTERIOR level, as documented
                 out[ij] = want_z ? dem[ij]
                                  : TF(int(k_dem[ij]) - gd.kstart);
             }
@@ -5881,10 +5861,10 @@ bool Immersed_boundary<TF>::calc_surface_diag(
         return true;
     }
 
-    // ---- downward radiation at the surface (apply_ib_rad_output.py) --------
+    // ---- downward radiation at the surface --------
     // What the IB surface energy balance reads: the prescribed series with
     // swradiation=prescribed, RRTMGP's surface fluxes with rrtmgp (at the IB
-    // surface with [radiation] sw_ib_columns, patch 63). One value per
+    // surface with [radiation] sw_ib_columns). One value per
     // column; a face selector is accepted and ignored.
     if (name == "sw_dn_ib" || name == "lw_dn_ib")
     {
@@ -5901,7 +5881,7 @@ bool Immersed_boundary<TF>::calc_surface_diag(
     }
 
     // ---- the IB canopy: already one value per column -----------------------
-    // apply_ib_vegetation.py. No face selector applies - these live on the
+    // No face selector applies - these live on the
     // column, not on a face - so _floor and _wall are accepted and ignored.
     {
         const std::vector<TF>* src = nullptr;
@@ -5911,7 +5891,6 @@ bool Immersed_boundary<TF>::calc_surface_diag(
         else if (name == "f3_ib")     src = &veg_f3;
         else if (name == "vpd_ib")    src = &veg_vpd;
         else if (name == "qt_veg_ib") src = &veg_qt_bot;
-        // apply_ib_lsm_output.py
         else if (name == "rs_veg_ib")  src = &veg_rs_veg;
         else if (name == "rs_soil_ib") src = &veg_rs_soil;
         else if (name == "ftr_ib")     src = &veg_ftr;
@@ -5919,7 +5898,6 @@ bool Immersed_boundary<TF>::calc_surface_diag(
         else if (name == "lai_ib")     src = &veg_lai;
         else if (name == "f2_ib")      src = &veg_f2;
         else if (name == "f2b_ib")     src = &veg_f2b;
-        // apply_ib_seb.py
         else if (name == "tskin_ib")     src = &seb_tskin;
         else if (name == "rnet_ib")      src = &seb_rnet;
         else if (name == "g_ib")         src = &seb_g;
@@ -5927,7 +5905,7 @@ bool Immersed_boundary<TF>::calc_surface_diag(
         else if (name == "seb_class_ib") src = &seb_class;
         else if (name == "t_soil_top_ib")
         {
-            // Prognostic under sw_seb; RACMO's t=0 value otherwise.
+            // Prognostic under sw_seb; the initial value otherwise.
             const size_t n0 = size_t(std::max(veg_soil_ktot - 1, 0)) * gd.ijcells;
             if (veg_soil_ktot > 0 && veg_t_soil.size() >= n0 + gd.ijcells)
                 std::copy(veg_t_soil.begin() + n0,
@@ -5969,7 +5947,7 @@ bool Immersed_boundary<TF>::calc_surface_diag(
         }
     }
 
-    // ---- form drag and skin friction - apply_ib_flux_accum.py --------------
+    // ---- form drag and skin friction --------------
     // Both as the force the AIR exerts ON THE TERRAIN per unit ground area
     // [Pa], positive along +x (+y): the drag the surface takes out of the
     // flow. They add up to the total surface drag of the column.
@@ -6012,7 +5990,7 @@ bool Immersed_boundary<TF>::calc_surface_diag(
                         out[ij] += TF(df) * fields.rhoref[k] * gd.dz[k] * dhi
                                  * (p[ijk] - p_level_mean[k]);
                 }
-        // patch 51: with sw_momentum_air_only the momentum the flow advects
+        // With sw_momentum_air_only the momentum the flow advects
         // into the terrain (stagnation pressure below the grid scale).
         const std::vector<TF>& adv = is_x ? adv_drag_u : adv_drag_v;
         if (sw_momentum_air_only && adv.size() == size_t(gd.ijcells))
@@ -6036,7 +6014,6 @@ bool Immersed_boundary<TF>::calc_surface_diag(
             return true;                            // no sw_momentum_flux: zero
         // Only faces of points the model moves: a riser that sw_wall_kinematic
         // closes can own wall faces, but its tendency is thrown away
-        // (apply_ib_momentum_air_only.py).
         build_free_faces();
         const std::vector<char>& cfree = is_x ? u_free : v_free;
         for (int m=0; m<wl.n; ++m)
@@ -6049,11 +6026,11 @@ bool Immersed_boundary<TF>::calc_surface_diag(
             // The force per unit ground area the kernel applies, at += tau/da:
             // dz/da = 1 on a floor (1/cos(alpha) with sw_wall_slope, where
             // da = dz cos(alpha)), dz/dx or dz/dy on a riser
-            // (apply_ib_momentum_air_only.py; was 1 on every floor).
+            // (with sw_momentum_air_only).
             const TF a = gd.dz[k] / wl.da[m];
             out[wl.i[m] + wl.j[m]*jj] -= fields.rhoref[k] * tau[m] * a;
         }
-        // apply_ib_momentum_air_only.py: the rock half of the ledges.
+        // The rock half of the ledges.
         if (sw_momentum_air_only && face_ok(2))
         {
             const std::vector<int>& lijk = is_x ? ledge_u_ijk : ledge_v_ijk;
@@ -6129,8 +6106,8 @@ bool Immersed_boundary<TF>::calc_surface_diag(
             const TF a = w_area(m);
 
             TF val;
-            if (name == "z0m_ib")        val = wall.z0m[m];   // apply_ib_z0_map.py
-            else if (name == "dn_ib")    val = wall.dn[m];    // apply_ib_wall_slope.py
+            if (name == "z0m_ib")        val = wall.z0m[m];
+            else if (name == "dn_ib")    val = wall.dn[m];
             else if (name == "z0h_ib")   val = wall.z0h[m];
             else if (name == "z0q_ib")   val = wall.z0q.empty()
                                              ? wall.z0h[m] : wall.z0q[m];
@@ -6230,7 +6207,7 @@ bool Immersed_boundary<TF>::calc_surface_diag(
             const TF z1 = wall.dn[m];
             const TF L  = wall.obuk[m];
 
-            // apply_ib_wall_sample.py: the MOST extrapolations start from
+            // The MOST extrapolations start from
             // the image point the flux used, not from the first cell.
             const bool samp = sw_wall_sample && !wall_samp_ok.empty() && wall_samp_ok[m];
             const TF z1s = samp ? wall_dn_s[m] : z1;
@@ -6268,7 +6245,7 @@ bool Immersed_boundary<TF>::calc_surface_diag(
                             : (sbc.count(s2) ? sbc.at(s2) : TF(0));
                 const TF p1 = (samp && wall_s_s.count(s2)) ? wall_s_s.at(s2)[m]
                             : fields.sp.at(s2)->fld[ijk];
-                // qt with z0q, thl with z0h (apply_ib_z0_map.py)
+                // qt with z0q, thl with z0h
                 const TF z0s = (s2 == "qt" && wall.z0q.size() == wall.z0h.size())
                              ? wall.z0q[m] : wall.z0h[m];
                 const TF zd = std::max(diag_z_scalar, z0s*TF(1.001));
@@ -6300,7 +6277,7 @@ bool Immersed_boundary<TF>::calc_surface_diag(
 
 namespace
 {
-    // apply_ib_tavg_tower.py: the tower profiles, in the order of tower_stat.
+    // The tower profiles, in the order of tower_stat.
     struct Tower_var { const char* name; const char* unit; const char* longname; };
     const Tower_var tower_vars[] = {
         {"u_tower",       "m s-1",      "interval mean u"},
@@ -6341,8 +6318,8 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
     // nc_def_var straight away), so a second call throws
     //     EXCEPTION: NetCDF: String match to name in use
     // at the first name, with no indication of which name or why. That is
-    // not hypothetical: the call lives in model.cxx, and a tree that was
-    // patched twice, or by two versions of this script, gets two of them.
+    // not hypothetical: the call lives in model.cxx, and a merge can easily
+    // leave two of them.
     static bool registered = false;
     if (registered)
     {
@@ -6353,7 +6330,7 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
         return;
     }
     registered = true;
-    column_created = true;              // apply_ib_column_guard.py
+    column_created = true;
 
     // The mask first: a column file that carries a profile without saying
     // which part of it is rock invites exactly the mistake this whole
@@ -6361,7 +6338,7 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
     column.add_prof("ib_mask", "1 where the cell is air, 0 where it is inside "
                                "the immersed boundary", "-", "z");
 
-    // apply_ib_tavg_tower.py: virtual towers. The tavg statistics as
+    // Virtual towers. The tavg statistics as
     // profiles at every column; NaN inside the terrain and until the first
     // interval is complete.
     if (tavg_interval > TF(0))
@@ -6412,7 +6389,7 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
         {"nface_floor",    "-",        "floor faces of the column"},
         {"nface_wall",     "-",        "riser faces of the column"},
         {"area_wall",      "-",        "riser area per unit ground area"},
-        // apply_ib_vegetation.py. Per column, not per face, so the _floor
+        // Per column, not per face, so the _floor
         // and _wall split below does not apply to them.
         {"ra_ib",          "s m-1",    "IB aerodynamic resistance, 1/(u* f_h)"},
         {"rs_ib",          "s m-1",    "IB surface resistance, the single value equivalent to the tiles"},
@@ -6420,7 +6397,6 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
         {"f3_ib",          "-",        "canopy resistance factor from vapour pressure deficit"},
         {"vpd_ib",         "Pa",       "vapour pressure deficit at the first fluid cell"},
         {"qt_veg_ib",      "kg kg-1",  "IB surface qt after the canopy resistance"},
-        // apply_ib_lsm_output.py
         {"rs_veg_ib",      "s m-1",    "IB canopy resistance rs_veg_min/LAI*f1*f2*f3"},
         {"rs_soil_ib",     "s m-1",    "IB soil resistance rs_soil_min*f2b"},
         {"ftr_ib",         "-",        "share of the IB moisture exchange through the canopy"},
@@ -6429,22 +6405,18 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
         {"f2_ib",          "-",        "root-zone soil-moisture stress factor (static)"},
         {"f2b_ib",         "-",        "top-layer soil-moisture stress factor (static)"},
         {"theta_soil_top_ib", "m3 m-3", "top soil layer water content (static)"},
-        // apply_ib_seb.py
         {"tskin_ib",       "K",        "IB surface temperature (SEB on land and water, prescribed on ice)"},
         {"rnet_ib",        "W m-2",    "IB net radiation (SEB columns)"},
         {"g_ib",           "W m-2",    "IB ground heat flux into the soil (SEB land columns)"},
         {"albedo_ib",      "-",        "IB surface albedo (SEB columns)"},
         {"t_soil_top_ib",  "K",        "top soil layer temperature"},
         {"seb_class_ib",   "-",        "IB surface class: 0 ice (prescribed), 1 land, 2 water"},
-        // apply_ib_rad_output.py
         {"sw_dn_ib",       "W m-2",    "downward shortwave radiation at the IB surface"},
         {"lw_dn_ib",       "W m-2",    "downward longwave radiation at the IB surface"},
-        // apply_ib_z0_map.py
         {"z0m_ib",         "m",        "IB momentum roughness length"},
         {"dn_ib",          "m",        "IB wall distance used by MOST"},
         {"z0h_ib",         "m",        "IB heat roughness length"},
         {"z0q_ib",         "m",        "IB moisture roughness length"},
-        // apply_ib_flux_accum.py
         {"taux_form_ib",   "Pa",       "IB form (pressure) drag on the terrain, x, per unit ground area"},
         {"tauy_form_ib",   "Pa",       "IB form (pressure) drag on the terrain, y, per unit ground area"},
         {"taux_skin_ib",   "Pa",       "IB MOST skin friction on the terrain, x, per unit ground area"},
@@ -6459,9 +6431,9 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
         "thl_fluxbot_ib", "qt_fluxbot_ib", "hfss_ib", "hfls_ib",
         "ustar_ib", "obuk_ib", "ch_ib", "thl_sbot_ib", "qt_sbot_ib",
         "z0m_ib", "z0h_ib", "z0q_ib", "dn_ib",
-        "taux_skin_ib", "tauy_skin_ib"};    // apply_ib_flux_accum.py
+        "taux_skin_ib", "tauy_skin_ib"};
 
-    // apply_ib_flux_accum.py: say in the file what the number is.
+    // Say in the file what the number is.
     auto accum_note = [&](const std::string& nm)
     {
         return (sw_flux_accum && is_flux_accum_name(nm))
@@ -6525,7 +6497,7 @@ void Immersed_boundary<TF>::exec_column(Column<TF>& column, Thermo<TF>& thermo)
 
     auto& gd = grid.get_grid_data();
 
-    // apply_ib_buoy.py: thermo buoy has no exner.
+    // Thermo buoy has no exner.
     if (exner_ref.empty() && thermo.get_switch() != Thermo_type::Buoy
             && thermo.get_switch() != Thermo_type::Disabled)
         exner_ref = thermo.get_basestate_vector("exner");
@@ -6546,7 +6518,7 @@ void Immersed_boundary<TF>::exec_column(Column<TF>& column, Thermo<TF>& thermo)
         fields.release_tmp(tmp);
     }
 
-    // apply_ib_tavg_tower.py: the last completed tavg interval.
+    // The last completed tavg interval.
     if (tavg_interval > TF(0))
     {
         const TF nan = std::numeric_limits<TF>::quiet_NaN();
@@ -6578,7 +6550,7 @@ void Immersed_boundary<TF>::exec_column(Column<TF>& column, Thermo<TF>& thermo)
     for (const std::string& s : columnlist)
     {
         std::fill(tmp->flux_bot.begin(), tmp->flux_bot.end(), TF(0));
-        // apply_ib_flux_accum.py: the interval mean, if there is one.
+        // The interval mean, if there is one.
         if (get_flux_accum(s, false, tmp->flux_bot.data())
                 || calc_surface_diag(s, tmp->flux_bot.data()))
             column.calc_time_series(s, tmp->flux_bot.data(), TF(0));
@@ -6588,7 +6560,7 @@ void Immersed_boundary<TF>::exec_column(Column<TF>& column, Thermo<TF>& thermo)
 #endif
 
 // ===========================================================================
-//   [IB] sw_flux_accum - apply_ib_flux_accum.py
+//   [IB] sw_flux_accum
 // ===========================================================================
 template<typename TF>
 bool Immersed_boundary<TF>::is_flux_accum_name(const std::string& name_in) const
@@ -6637,7 +6609,7 @@ bool Immersed_boundary<TF>::get_flux_accum(
 template<typename TF>
 void Immersed_boundary<TF>::build_momentum_air_only()
 {
-    /* apply_ib_momentum_air_only.py, once at start-up.
+    /* Once at start-up.
 
        The momentum box of a u point spans from the centre of the cell west of
        it to the centre of the cell east of it. On a floor its bottom lies
@@ -6718,7 +6690,7 @@ void Immersed_boundary<TF>::build_momentum_air_only()
 template<typename TF>
 void Immersed_boundary<TF>::exec_ledge_most()
 {
-    /* apply_ib_momentum_air_only.py. The MOST stress on the rock half of the
+    /* The MOST stress on the rock half of the
        ledges, as wall_momentum_flux_kernel does on a floor face:
            tau = -wfac u*^2 c / |U_h|,   c_t += tau a / dz,
        with wfac = 1/2, u* and the area factor a of the rock column (west for
@@ -6777,7 +6749,7 @@ template<typename TF>
 void Immersed_boundary<TF>::exec_momentum_air_only(
         const TF* const evisc_h, const TF* const evisc_v)
 {
-    /* apply_ib_momentum_air_only.py. Called from exec_momentum_flux, i.e.
+    /* Called from exec_momentum_flux, i.e.
        after advec and diff and before the MOST stress is added, with the
        K_h and K_v the momentum operator used. See momentum_air_only_kernel. */
     auto& gd = grid.get_grid_data();
@@ -6818,7 +6790,7 @@ void Immersed_boundary<TF>::exec_momentum_air_only(
         master.print_message(
                 "IB: sw_momentum_air_only ON - %d u and %d v faces between air and "
                 "terrain carry no SGS momentum flux (the advective flux into the "
-                "terrain is kept and counted as form drag, patch 51); first stage: "
+                "terrain is kept and counted as form drag); first stage: "
                 "x-momentum advected into the terrain %.3e N, SGS given back %.3e N\n",
                 n_faces[0], n_faces[1], removed[0]*da, removed[1]*da);
         air_only_reported = true;
@@ -6828,14 +6800,14 @@ void Immersed_boundary<TF>::exec_momentum_air_only(
 template<typename TF>
 void Immersed_boundary<TF>::build_free_faces()
 {
-    /* apply_ib_flux_accum.py: the u (v) faces the pressure gradient moves,
+    /* The u (v) faces the pressure gradient moves,
        on both halo sides of the subdomain, so that a face and its
        neighbours can be tested without communication. A face is not free
        when it is inside the terrain (is_solid at the face, the test the
        ghost cells, blank_u and the wall lists use; ghost cells are inside
        too) or when it is a riser sw_wall_kinematic holds closed (same rule
        as kin_u_ijk). u_solid (v_solid) keeps the is_solid part alone.
-       apply_ib_momentum_air_only.py: faces outside the domain on an open
+       Faces outside the domain on an open
        lateral boundary count as free, so nothing is exchanged with them. */
     if (!u_free.empty())
         return;
@@ -7116,7 +7088,7 @@ void Immersed_boundary<TF>::exec_flux_accum(
 }
 
 // ===========================================================================
-//   [IB] tavg_interval - apply_ib_tavg.py
+//   [IB] tavg_interval
 // ===========================================================================
 template<typename TF>
 void Immersed_boundary<TF>::calc_sgs_tke(TF* const restrict e)
@@ -7143,12 +7115,12 @@ void Immersed_boundary<TF>::calc_sgs_tke(TF* const restrict e)
         return;
     const TF* const restrict evisc = fields.sd.at(name)->fld.data();
 
-    // apply_ib_sgs_tke_mason.py. With sw_mason_wall the closure's lengths
+    // With sw_mason_wall the closure's lengths
     // are damped with the distance to the surface, and the estimate uses
     // the SAME lengths: lambda = l_iso(d)/cs instead of Delta, and for
     // swanisotropic K = K_v (l_iso(d)/l_v(d))^2, with
     // l(d) = [1/l0^n + 1/(kappa (d + z0))^n]^(-1/n), d = max(z - dem, dz/2).
-    // Without that the equivalent eddy stays Delta (46 m at S5) right down
+    // Without that the equivalent eddy stays Delta (46 m for a 100 x 100 x 10 m grid) right down
     // to the first air cell, which no eddy can be. Static: built once.
     const bool mason_active = sw_mason_wall
             && ((sgs_kind == 0 && sw_mason_ib) || sgs_kind == 1);
@@ -7307,7 +7279,7 @@ void Immersed_boundary<TF>::exec_tavg(
                     "IB: tavg - wrote %d plane(s) at t = %g s, averaged over %g s\n",
                     int(nh*out_names.size()), time, tavg_time);
 
-            // apply_ib_tavg_tower.py: the tower profiles of this interval.
+            // The tower profiles of this interval.
             const int ntow = tower_i.size();
             if (ntow > 0)
             {
@@ -7427,7 +7399,7 @@ void Immersed_boundary<TF>::exec_tavg(
                 at(16,q,ij) += wdt*e;
             }
 
-    // ---- virtual towers (apply_ib_tavg_tower.py) ---------------------------
+    // ---- virtual towers ---------------------------
     // Every air level of every column on this process, at the cell centre:
     // u, v from the two faces, w from the two half levels. SGS fluxes are the
     // vertical components with the K the diffusion operator uses: centred
@@ -7507,7 +7479,7 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
             // ---- terrain-following xy planes: <var>_tf / <var>_tf<h> -----
             // A horizontal slice at a fixed height ABOVE THE LOCAL SURFACE.
             // `<var>_tf` writes one plane per [IB] tf_cross_heights entry;
-            // `<var>_tf<h>` writes that one height. See apply_ib_tf_cross.py.
+            // `<var>_tf<h>` writes that one height.
             {
                 const size_t p_tf = s.rfind("_tf");
                 const bool is_tf = sw_tf_cross && p_tf != std::string::npos
@@ -7531,7 +7503,7 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
                     const bool want_w    = (var == "w");
 
                     const TF* fld = nullptr;
-                    // apply_ib_tavg.py: the SGS TKE (prognostic or estimated)
+                    // The SGS TKE (prognostic or estimated)
                     std::shared_ptr<Field3d<TF>> tmp_sgs;
                     if (var == "sgs_tke")
                     {
@@ -7639,7 +7611,7 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
                 auto tmpc = fields.get_tmp();
                 std::fill(tmpc->flux_bot.begin(),
                           tmpc->flux_bot.end(), TF(0));
-                // apply_ib_flux_accum.py: the interval mean, if there is one.
+                // The interval mean, if there is one.
                 const bool handled =
                         get_flux_accum(s, true, tmpc->flux_bot.data())
                         || calc_surface_diag(s, tmpc->flux_bot.data());
@@ -7680,7 +7652,7 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
                 continue;
             }
 
-            // Stored as <scalar>_fluxbot_ib by init (apply_ib_flux_accum.py).
+            // Stored as <scalar>_fluxbot_ib by init.
             const std::string fluxbot_ib_string = "_fluxbot_ib";
             if (has_ending(s, fluxbot_ib_string))
             {
@@ -7778,7 +7750,7 @@ void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
 }
 
 // ===========================================================================
-//   [IB] sw_advec_wall - apply_ib_advec_wall.py, README.md section 10
+//   [IB] sw_advec_wall
 // ===========================================================================
 #ifndef USECUDA
 namespace

@@ -38,7 +38,7 @@ Pres_2<TF>::Pres_2(Master& masterin, Grid<TF>& gridin, Fields<TF>& fieldsin, FFT
 {
     sw_openbc = inputin.get_item<bool>  ("pres", "sw_openbc", "", false);
 
-    // apply_lbc_periodic_y.py: open in x only, periodic in y.
+    // Open in x only, periodic in y.
     sw_periodic_y = sw_openbc && inputin.get_item<bool>(
             "boundary_lateral", "sw_periodic_y", "", false);
 
@@ -80,7 +80,7 @@ void Pres_2<TF>::exec(const double dt, Stats<TF>& stats)
           gd.dzi.data(), fields.rhoref.data(), fields.rhorefh.data(),
           dt);
 
-    // [IB] sw_wall_kinematic (apply_ib_wall_kinematic.py): the terrain keeps
+    // [IB] sw_wall_kinematic: the terrain keeps
     // its divergence, a mass source as in Kim, Kim & Choi (2001), so that
     // the projection does not push back on the terrain-following velocity
     // imposed on the floor faces; only the air is made divergence free.
@@ -120,7 +120,7 @@ void Pres_2<TF>::zero_rhs_in_terrain(TF* const restrict p)
     // A periodic or all-Neumann (open BC) problem is only solvable if the
     // dz-weighted sum of the right-hand side vanishes. With the terrain
     // excluded it equals the net mass flux from the terrain into the air;
-    // the lateral boundary removes it under patch 28, anything left is
+    // the lateral boundary removes it with sw_lbc_tf_periodic, anything left is
     // spread evenly over the air (a uniform residual divergence).
     if (in_terrain.empty())
     {
@@ -199,7 +199,7 @@ void Pres_2<TF>::set_values()
 
     // Modified wave numbers per direction: DCT (Neumann) for an open
     // direction, DFT (periodic) otherwise. With [boundary_lateral]
-    // sw_periodic_y only x is open (apply_lbc_periodic_y.py).
+    // sw_periodic_y only x is open.
     if (sw_openbc)
     {
         for (int i=0; i<gd.itot; ++i)
@@ -587,7 +587,7 @@ TF Pres_2<TF>::calc_divergence(const TF* const restrict u, const TF* const restr
             for (int i=gd.istart; i<gd.iend; ++i)
             {
                 // [IB] sw_wall_kinematic: the terrain keeps its divergence
-                // (apply_ib_wall_kinematic.py), report the air only.
+                // as a mass source; report the air only.
                 if (!in_terrain.empty() && in_terrain[(i-gd.igc) + (j-gd.jgc)*gd.imax
                                                      + (k-gd.kgc)*gd.imax*gd.jmax])
                     continue;

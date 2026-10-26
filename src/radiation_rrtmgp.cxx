@@ -679,7 +679,7 @@ Radiation_rrtmgp<TF>::Radiation_rrtmgp(
 
     dt_rad = inputin.get_item<double>("radiation", "dt_rad", "");
 
-    // Patch 63 (apply_ib_radiation.py): columns that start at the immersed
+    // Columns that start at the immersed
     // boundary instead of the domain floor.
     sw_ib_columns = inputin.get_item<bool>("radiation", "sw_ib_columns", "", false);
 
@@ -1753,7 +1753,7 @@ void Radiation_rrtmgp<TF>::exec(
         Array<Float,2> flux_dn ({gd.imax*gd.jmax, gd.ktot+1});
         Array<Float,2> flux_net({gd.imax*gd.jmax, gd.ktot+1});
 
-        // Patch 63: start every column at the immersed-boundary surface.
+        // Start every column at the immersed-boundary surface.
         use_ib_p = false;
         if (sw_ib_columns)
         {
@@ -1991,7 +1991,7 @@ void Radiation_rrtmgp<TF>::exec(
         fields.release_tmp(clwp);
         fields.release_tmp(ciwp);
 
-        // Patch 63: the heating of each cut cell belongs to its air part.
+        // The heating of each cut cell belongs to its air part.
         if (use_ib_p)
             correct_ib_heating(thermo);
         use_ib_p = false;
@@ -2012,7 +2012,7 @@ template<typename TF>
 void Radiation_rrtmgp<TF>::set_ib_surface(
         const std::vector<TF>* dem, std::function<void(std::vector<TF>&)> get_tsurf)
 {
-    // Patch 63 (apply_ib_radiation.py): the IB hands over its terrain and
+    // The IB hands over its terrain and
     // surface temperature; used only with [radiation] sw_ib_columns=true.
     auto& gd = grid.get_grid_data();
     if (dem == nullptr || dem->size() != size_t(gd.ijcells))
@@ -2024,7 +2024,7 @@ void Radiation_rrtmgp<TF>::set_ib_surface(
     ib_dem = dem;
     ib_get_tsurf = get_tsurf;
     if (sw_ib_columns)
-        master.print_message("RRTMGP: columns start at the IB surface (sw_ib_columns, patch 63)\n");
+        master.print_message("RRTMGP: columns start at the IB surface (sw_ib_columns)\n");
 }
 
 
@@ -2035,7 +2035,7 @@ void Radiation_rrtmgp<TF>::set_ib_columns(
         Array<Float,2>& t_lay, Array<Float,2>& t_lev, Array<Float,1>& t_sfc,
         Array<Float,2>& h2o, Array<Float,2>& clwp, Array<Float,2>& ciwp)
 {
-    /* Patch 63 (apply_ib_radiation.py). Make every radiation column start at
+    /* Make every radiation column start at
        the immersed-boundary surface z_s (the DEM of the column):
 
        - every half level at or below z_s gets the surface pressure p_s
@@ -2146,7 +2146,7 @@ void Radiation_rrtmgp<TF>::set_ib_columns(
 template<typename TF>
 void Radiation_rrtmgp<TF>::correct_ib_heating(Thermo<TF>& thermo)
 {
-    /* Patch 63. The flux divergence of the cut layer is the energy its air
+    /* The flux divergence of the cut layer is the energy its air
        part absorbs. If the cell centre is in the air the model carries that
        cell as a whole air cell, so calc_tendency's rate (divergence over the
        mass of the whole cell) already puts exactly that energy into it. If
@@ -2387,7 +2387,7 @@ void Radiation_rrtmgp<TF>::exec_individual_column_stats(
     Array<Float,2> ciwp_a(
             std::vector<Float>(it, it + n_cols * gd.ktot), {n_cols, gd.ktot});
 
-    // Patch 63: these columns start at the IB surface too.
+    // These columns start at the IB surface too.
     use_ib_p = false;
     if (sw_ib_columns)
     {
@@ -2610,7 +2610,7 @@ void Radiation_rrtmgp<TF>::exec_longwave(
     // Define the arrays that contain the subsets.
     const std::vector<Float>& p  = thermo.get_basestate_vector("p");
     const std::vector<Float>& ph = thermo.get_basestate_vector("ph");
-    // Patch 63: per-column pressures that start at the IB surface.
+    // Per-column pressures that start at the IB surface.
     Array<Float,2> p_lay = use_ib_p ? p_lay_ib
         : Array<Float,2>(std::vector<Float>(p.begin()  + gd.kstart, p.begin()  + gd.kend  ), {1, n_lay});
     Array<Float,2> p_lev = use_ib_p ? p_lev_ib
@@ -2825,7 +2825,7 @@ void Radiation_rrtmgp<TF>::exec_shortwave(
     // Define the arrays that contain the subsets.
     std::vector<Float> p  = thermo.get_basestate_vector("p");
     std::vector<Float> ph = thermo.get_basestate_vector("ph");
-    // Patch 63: per-column pressures that start at the IB surface.
+    // Per-column pressures that start at the IB surface.
     Array<Float,2> p_lay = use_ib_p ? p_lay_ib
         : Array<Float,2>(std::vector<Float>(p.begin()  + gd.kstart, p.begin()  + gd.kend  ), {1, n_lay});
     Array<Float,2> p_lev = use_ib_p ? p_lev_ib

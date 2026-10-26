@@ -1399,7 +1399,7 @@ Thermo_moist<TF>::Thermo_moist(
     swphydro_3d = inputin.get_item<bool>("thermo", "swphydro_3d", "", false);
 
     // Was left uninitialised with swphydro_3d=false, and is tested every
-    // time step in update_time_dependent() (patch 66).
+    // time step in update_time_dependent().
     swtimedep_phydro_3d = false;
 
     if (swphydro_3d)
@@ -1744,11 +1744,11 @@ void Thermo_moist<TF>::create(
 }
 
 
-// apply_basestate_air.py: host code, compiled in every build.
+// Host code, compiled in every build.
 template<typename TF>
 void Thermo_moist<TF>::set_basestate_air_levels(const std::vector<unsigned int>& k_air)
 {
-    /* apply_basestate_air.py. With an immersed boundary the terrain cells
+    /* With an immersed boundary the terrain cells
        hold the surface value (blank solid) or an IB mirror value, so their
        slab means are not those of the air. On a slope every level the
        terrain cuts through then gets a reference thv that is wrong for the
@@ -1824,7 +1824,7 @@ void Thermo_moist<TF>::calc_basestate_air_means()
 template<typename TF>
 const TF* Thermo_moist<TF>::basestate_mean(const std::string& name)
 {
-    // apply_basestate_air.py: the air-only means when an IB set them.
+    // The air-only means when an IB set them.
     if (!bs_k_air.empty() && !bs_thl_air.empty())
         return (name == "thl") ? bs_thl_air.data() : bs_qt_air.data();
     return fields.sp.at(name)->fld_mean.data();
@@ -1841,7 +1841,7 @@ void Thermo_moist<TF>::exec(const double dt, Stats<TF>& stats)
 
     if (bs.swupdatebasestate)
     {
-        calc_basestate_air_means();     // apply_basestate_air.py
+        calc_basestate_air_means();
         calc_base_state(
                 bs.pref.data(), bs.prefh.data(),
                 bs.rhoref.data(), bs.rhorefh.data(),
@@ -2095,7 +2095,7 @@ void Thermo_moist<TF>::get_thermo_field(
     {
         auto tmp = fields.get_tmp();
 
-        calc_basestate_air_means();     // apply_basestate_air.py
+        calc_basestate_air_means();
         calc_base_state(
                 base.pref.data(),
                 base.prefh.data(),
@@ -2105,7 +2105,7 @@ void Thermo_moist<TF>::get_thermo_field(
                 &tmp->fld[3*gd.kcells],
                 base.exnref.data(),
                 base.exnrefh.data(),
-                basestate_mean("thl"),     // apply_basestate_air.py
+                basestate_mean("thl"),
                 basestate_mean("qt"),
                 base.pbot,
                 gd.kstart,

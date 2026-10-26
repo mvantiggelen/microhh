@@ -130,7 +130,7 @@ namespace NN_interpolator_kernels
 
 
     // Offset of each target coordinate from the coordinate of its nearest
-    // neighbour (patch 61, [subdomain] interpolation=linear).
+    // neighbour ([subdomain] interpolation=linear).
     template<typename TF>
     std::vector<TF> get_nn_offsets(
         const std::vector<TF>& x_target,
@@ -166,7 +166,7 @@ namespace NN_interpolator_kernels
     }
 
 
-    // Conservative piecewise-linear refinement (patch 61): in every parent
+    // Conservative piecewise-linear refinement: in every parent
     // cell f = f_c + s_x dx + s_y dy + s_z dz, with limited slopes. For child
     // points placed symmetrically in the parent cell the child mean equals
     // the parent value, so boundary-normal mass fluxes are those of the parent.

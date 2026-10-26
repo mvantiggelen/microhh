@@ -61,7 +61,7 @@ class FFT
         bool has_fftw_plan;
         bool sw_openbc;
 
-        // apply_lbc_periodic_y.py: the transform per direction, DCT for an
+        // The transform per direction, DCT for an
         // open (Neumann) direction, DFT for a periodic one.
         FFT_type fft_type_x;
         FFT_type fft_type_y;

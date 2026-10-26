@@ -291,7 +291,7 @@ int Field3d_io<TF>::save_xz_slice(
         // in each separately.
         const int mpi_rank_recv = 0;
 
-        // apply_cross_gather_contig.py: no derived MPI datatypes (hpcx
+        // No derived MPI datatypes (hpcx
         // leaks ~3.5 kB per gather even when they are freed). Gather the
         // contiguous tiles and put them in place on the root.
         std::vector<TF> recv;
@@ -419,7 +419,7 @@ int Field3d_io<TF>::save_yz_slice(
         // const int mpi_rank_recv = md.mpicoordx * md.npy;
         const int mpi_rank_recv = 0;
 
-        // apply_cross_gather_contig.py: no derived MPI datatypes (hpcx
+        // No derived MPI datatypes (hpcx
         // leaks ~3.5 kB per gather even when they are freed). Gather the
         // contiguous tiles and put them in place on the root.
         std::vector<TF> recv;
@@ -540,7 +540,7 @@ int Field3d_io<TF>::save_xy_slice(
 // each MPI task into a single binary using MPI-IO is **extremely** slow. With `DISABLE_2D_MPIIO`,
 // the 2D slices are first gathered on MPI rank 0, and then written without MPI-IO.
 //
-    // apply_cross_gather_contig.py: no derived MPI datatypes (hpcx leaks
+    // No derived MPI datatypes (hpcx leaks
     // ~3.5 kB per gather even when they are freed). Gather the contiguous
     // tiles and put them in place on the root. Rank p of commxy holds tile
     // (p % npx, p / npx), as in the stock Gatherv offsets.

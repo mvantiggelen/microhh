@@ -54,7 +54,7 @@ class Pres
 
         // Cells (no-ghost-cell index) whose right-hand side is set to zero:
         // the inside of the IB terrain under [IB] sw_wall_kinematic, which
-        // keeps its divergence as a mass source (apply_ib_wall_kinematic.py).
+        // keeps its divergence as a mass source.
         // Only Pres_2 on the CPU uses it.
         void set_rhs_zero_cells(const std::vector<int>& cells) { rhs_zero_cells = cells; }
 

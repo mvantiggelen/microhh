@@ -990,7 +990,7 @@ namespace
 
 
     /**
-     * The same budget terms for [diff] swanisotropic (apply_budget_aniso.py).
+     * The same budget terms for [diff] swanisotropic.
      * Follows Diff_kernels_anisotropic: a velocity derivative along z is
      * multiplied by evisc_v, a horizontal one by evisc_h, so
      * K (du/dz + dw/dx) becomes K_v du/dz + K_h dw/dx. With
@@ -1057,10 +1057,8 @@ namespace
                                                evisc_v[ijk   -jj-kk] + evisc_v[ijk   -jj] + evisc_v[ijk   -kk] + evisc_v[ijk   ]);
                 }
 
-        // boundary_cyclic(evisch_h, evisch_v);
-
         // -----------------------------
-        // Test: directly calculate diffusion terms as 2 ui * d/dxj(visc * dui/dx + visc * duj/dxi)
+        // Diffusion terms calculated directly as 2 ui * d/dxj(visc * dui/dx + visc * duj/dxi)
         // Term is stored in xx_diss; xx_visc=0
         // -----------------------------
         #pragma omp parallel for
@@ -1871,7 +1869,7 @@ void Budget_2<TF>::exec_stats(Stats<TF>& stats)
                 auto evisch = fields.get_tmp();
 
                 // [diff] swanisotropic keeps evisc_h and evisc_v and has no
-                // evisc; asking for it threw map::at (apply_budget_aniso.py).
+                // evisc; asking for it threw map::at.
                 if (fields.sd.count("evisc_h") && fields.sd.count("evisc_v"))
                 {
                     auto evisch_v = fields.get_tmp();

@@ -277,10 +277,10 @@ void Model<TF>::load()
 
     ib->create(*input_nc);
     pres->set_rhs_zero_cells(ib->get_terrain_cells());
-    // apply_basestate_air.py: an updated base state from the air cells only.
+    // An updated base state from the air cells only.
     if (ib->get_switch() != IB_type::Disabled)
         thermo->set_basestate_air_levels(ib->get_k_dem());
-    ib->load(timeloop->get_iotime());   // apply_ib_seb.py: prognostic surface state
+    ib->load(timeloop->get_iotime());   // Prognostic surface state
     ib->create_column(*column);
     buffer->create(*input, *input_nc, *stats, *timeloop);
     force->create(*input, *input_nc, *stats, *timeloop);
@@ -289,15 +289,15 @@ void Model<TF>::load()
     aerosol->create(*input, *input_nc, *stats);
     background->create(*input, *input_nc, *stats);
 
-    // Patch 62 (apply_ib_micro.py): precipitation onto the IB surface.
+    // Precipitation onto the IB surface.
     microphys->set_ib_surface(ib->get_k_dem());
 
-    // Patch 64 (apply_ib_rad_output.py): sw_dn_ib and lw_dn_ib.
+    // sw_dn_ib and lw_dn_ib from the IB surface.
     ib->set_radiation(*radiation);
     microphys->create(*input, *input_nc, *stats, *cross, *dump, *column);
 
     // Radiation needs to be created after thermo as it needs base profiles.
-    // Patch 63 (apply_ib_radiation.py): column radiation from the IB surface.
+    // Column radiation from the IB surface.
     radiation->set_ib_surface(
             &ib->get_dem(),
             [this](std::vector<TF>& t_s) { ib->get_surface_temperature(t_s, *thermo); });
@@ -483,7 +483,7 @@ void Model<TF>::exec()
 
                 // Set the immersed boundary conditions for scalars.
                 ib->exec_scalars();
-                // apply_lbc_ib_halos.py: exec_scalars wrapped the halo
+                // exec_scalars wrapped the halo
                 // periodically; put the open-boundary values back.
                 lbc->set_ghost_cells_scalars();
 
@@ -506,10 +506,10 @@ void Model<TF>::exec()
                 // The IB surface exchange for scalars, as a source term.
                 // MUST follow diff->exec: it subtracts the diffusive
                 // flux across every wall face before adding the MOST
-                // one. See apply_ib_scalar_flux.py.
+                // one.
                 ib->exec_scalar_flux(*thermo, *radiation, *stats);
                 // ... and the tangential stress, same pattern, on the u and v
-                // grids. See apply_ib_momentum_flux.py.
+                // grids.
                 ib->exec_momentum_flux(*stats);
                 check("ib_scalar_flux");
 
@@ -560,7 +560,7 @@ void Model<TF>::exec()
 
                 // [IB] sw_flux_accum: integrate the surface fluxes and the
                 // drag of this stage, after the pressure solve so that p
-                // belongs to it (apply_ib_flux_accum.py).
+                // belongs to it.
                 ib->exec_flux_accum(*cross, *column, *timeloop);
 
                 // Apply the limiter as the last tendency.
@@ -578,7 +578,7 @@ void Model<TF>::exec()
                 if (timeloop->is_stats_step())
                 {
                     // [IB] tavg_interval: time statistics on terrain-following
-                    // planes, sampled every full step (apply_ib_tavg.py).
+                    // planes, sampled every full step.
                     ib->exec_tavg(*cross, timeloop->get_time(), timeloop->get_dt(),
                                   timeloop->get_iotime());
 
@@ -671,7 +671,7 @@ void Model<TF>::exec()
                         // Save the thermo before the split of the thread, to avoid overwrite during stats
                         // leading to restart failures.
                         thermo->save(iotime);
-                        ib->save(iotime);   // apply_ib_seb.py
+                        ib->save(iotime);
 
                         #pragma omp task default(shared) firstprivate(iotime, itime, idt, iteration)
                         {

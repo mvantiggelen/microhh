@@ -38,7 +38,7 @@
 
 namespace
 {
-    // apply_lbc_tf_rock_return.py (patch 53): weight b_s with which the
+    // Weight b_s with which the
     // tendency of RK substep s enters the step, u(n+1) - u(n) = dt sum_s b_s F_s,
     // for the low-storage schemes of Timeloop (cA, cB as in timeloop.cxx):
     // b_s = cB_s + sum_{m>s} cB_m prod_{l=s+1..m} cA_l. RK3: 1/6, 3/10, 8/15.
@@ -210,7 +210,7 @@ namespace
     // divergence, and therefore in w - at the inner edge of the sponge.
     //
     // S(x) = x^2*(3-2x) keeps both ends and has dS/dx = 0 at both, so the
-    // nudging dies away smoothly into the interior. See apply_sponge_taper.py.
+    // nudging dies away smoothly into the interior.
     template<typename TF>
     inline TF sponge_taper(const TF x)
     {
@@ -298,7 +298,7 @@ namespace
         // by set_lbc_gcs, so the band starts at n = 2. North is not: v[jend]
         // is the face, curtain plane r is face jend-nsponge+r, and the band is
         // jend-1 .. jend-nsponge with n = 1 .. nsponge - exactly what
-        // lateral_sponge_kernel_u does at East. See apply_lbc_sponge_edges.py.
+        // lateral_sponge_kernel_u does at East.
         const int nstart = (location==Lbc_location::South) ? 2 : 1;
 
         for (int k=kstart; k<kend; ++k)
@@ -358,7 +358,7 @@ namespace
                 for (int n=1; n<=nsponge; ++n)
                 {
                     // Offset in y-direction for domain corners (none if
-                    // y is periodic, apply_lbc_periodic_y.py).
+                    // y is periodic).
                     const int jstart_loc = (sw_open_y && mpiidy == 0)     ? jstart + (n-1) : jstart;
                     const int jend_loc   = (sw_open_y && mpiidy == npy-1) ? jend   - (n-1) : jend;
 
@@ -860,7 +860,7 @@ Boundary_lateral<TF>::Boundary_lateral(
         sw_neumann_w = inputin.get_item<bool>("boundary_lateral", "sw_neumann_w", "", true);
         sw_wtop_2d = inputin.get_item<bool>("boundary_lateral", "sw_wtop_2d", "", false);
 
-        // apply_lbc_periodic_y.py (patch 54): open boundaries at west and
+        // Open boundaries at west and
         // east only; y stays periodic (no south/north LBC files, ghost cells
         // or sponge, and a DFT instead of a DCT in y in the pressure solve).
         sw_periodic_y = inputin.get_item<bool>("boundary_lateral", "sw_periodic_y", "", false);
@@ -896,13 +896,13 @@ Boundary_lateral<TF>::Boundary_lateral(
             recycle_offset = inputin.get_item<int>("boundary_lateral", "recycle_offset", "");
         }
 
-        // Terrain-following periodic LBCs (patch 28): every edge is fed from
+        // Terrain-following periodic LBCs: every edge is fed from
         // the opposite edge at the same height above the local surface,
-        // instead of from lbc_* files. See apply_lbc_tf_periodic.py.
+        // instead of from lbc_* files.
         sw_lbc_tf_periodic = inputin.get_item<bool>(
                 "boundary_lateral", "sw_lbc_tf_periodic", "", false);
 
-        // apply_ib_wall_kinematic.py: the terrain is out of the pressure
+        // The terrain is out of the pressure
         // solve, so its edge faces must carry exactly the terrain mass flux.
         sw_lbc_rock_export = sw_lbc_tf_periodic && inputin.get_item<bool>(
                 "IB", "sw_wall_kinematic", "", false);
@@ -916,7 +916,6 @@ Boundary_lateral<TF>::Boundary_lateral(
                 lbc_tf_gradient.emplace(fld, inputin.get_item<TF>(
                         "boundary_lateral", "lbc_tf_gradient", fld, TF(0)));
 
-            // apply_lbc_tf_rock_return.py (patch 53).
             const std::string rock_return = inputin.get_item<std::string>(
                     "boundary_lateral", "lbc_tf_rock_return", "", "uniform");
             if (rock_return == "surface")
@@ -935,14 +934,14 @@ Boundary_lateral<TF>::Boundary_lateral(
             lbc_tf_budget_every = inputin.get_item<int>(
                     "boundary_lateral", "lbc_tf_budget_every", "", 0);
 
-            // Zero mean pressure gradient in the upper air (patch 53).
+            // Zero mean pressure gradient in the upper air.
             sw_lbc_tf_zero_pgrad = inputin.get_item<bool>(
                     "boundary_lateral", "lbc_tf_zero_pgrad", "", false);
             lbc_tf_pgrad_zmin = inputin.get_item<TF>(
                     "boundary_lateral", "lbc_tf_pgrad_zmin", "", TF(20));
             lbc_tf_pgrad_gain = inputin.get_item<TF>(
                     "boundary_lateral", "lbc_tf_pgrad_gain", "", TF(0.5));
-            // Axelsen test: 0.5 and 1.0 converge alike, 1.5 diverges in 60 s.
+            // In the axelsen2009_lbc case 0.5 and 1.0 converge alike, 1.5 diverges in 60 s.
             if (sw_lbc_tf_zero_pgrad && (lbc_tf_pgrad_gain <= TF(0) || lbc_tf_pgrad_gain > TF(1)))
                 throw std::runtime_error("lbc_tf_pgrad_gain must be in (0, 1]");
         }
@@ -1499,7 +1498,7 @@ unsigned long Boundary_lateral<TF>::get_time_limit(unsigned long itime)
 template <typename TF>
 void Boundary_lateral<TF>::set_ghost_cells_scalars()
 {
-    /* apply_lbc_ib_halos.py. The open-boundary ghost cells of the slist
+    /* The open-boundary ghost cells of the slist
        scalars, again. Immersed_boundary::exec_scalars ends with a
        boundary_cyclic exchange, which knows nothing about open boundaries
        and wraps the halo periodically: the ghost cells at an open edge then
@@ -1548,7 +1547,7 @@ void Boundary_lateral<TF>::set_ghost_cells(
     // boundary-normal velocities the projection sees are the ones the field
     // keeps until the next solve. Refreshing them here as well, at the start
     // of a substep, changes the face velocities of a field that was just
-    // made divergence free: in the B13 smoke test that left a divergence of
+    // made divergence free: in the fedorovich2017_b13 case that left a divergence of
     // ~1e-2 1/s in the edge cells, i.e. a -thl*div source of K/s, and the
     // edges cooled by >10 K in five minutes. Only the very first call fills.
     if (sw_lbc_tf_periodic && !lbc_tf_initialized)
@@ -1832,7 +1831,7 @@ void Boundary_lateral<TF>::exec_lateral_sponge(
         // The plain sponge runs on EVERY edge; sw_recycle only chooses the
         // kernel, inside. It used to gate the whole sponge at east, south and
         // north, so with recycling off thl/qt were relaxed at the west edge
-        // only. See apply_lbc_sponge_edges.py.
+        // only.
         if (md.mpicoordx == md.npx-1)
         {
             if (sw_recycle_fld && sw_recycle[Lbc_location::East])
@@ -2046,7 +2045,7 @@ void Boundary_lateral<TF>::read_xy_slice(
 template <typename TF>
 void Boundary_lateral<TF>::refresh_lbc_tf_periodic(const TF dt_sub)
 {
-    /* Terrain-following periodic lateral boundaries (patch 28).
+    /* Terrain-following periodic lateral boundaries.
 
        The un-sponged interior is treated as periodic: the buffer of an
        edge (ghost + sponge cells) is filled from the band of the same width
@@ -2332,13 +2331,13 @@ void Boundary_lateral<TF>::refresh_lbc_tf_periodic(const TF dt_sub)
     // Close the mass balance. The two faces of an edge pair are fed from
     // DIFFERENT planes (the bands just inside the opposite sponges), so their
     // instantaneous turbulent mass fluxes differ. Left to w_top, that
-    // imbalance pumped the whole column at O(1 m/s) in the B13 smoke test.
+    // imbalance pumped the whole column at O(1 m/s) in the fedorovich2017_b13 case.
     // A periodic domain has no net lateral divergence, so remove it per edge
     // pair instead: a uniform correction on the air cells of both faces, in
     // opposite directions, so that inflow equals outflow; w_top is then zero.
     if (sw_openbc_uv && !sw_wtop_2d)
     {
-        // apply_lbc_tf_rock_return.py (patch 53): the balance also returns
+        // The balance also returns
         // its budget, per edge pair, in this order (mass fluxes in kg/s,
         // mass-weighted areas in kg/m, velocities in m/s):
         //   [0] F, [1] flux lo, [2] flux hi, [3] rock flux lo, [4] rock flux hi,
@@ -2476,7 +2475,7 @@ void Boundary_lateral<TF>::refresh_lbc_tf_periodic(const TF dt_sub)
                 shift(lbc_hi.at(name), nlbc_hi, true, -delta, -delta_s);
         };
 
-        // apply_ib_wall_kinematic.py: air that leaves through the floor of
+        // Air that leaves through the floor of
         // a sloping IB surface (or enters from it) passes through the rock,
         // and the rock is closed everywhere except at the domain edges. The
         // projection would remove the net part, which on a plane slope is
@@ -2554,7 +2553,7 @@ void Boundary_lateral<TF>::refresh_lbc_tf_periodic(const TF dt_sub)
                         double(f_rock), along_x ? "x" : "y", double(u_lo), double(u_hi));
         };
 
-        // Zero mean pressure gradient (patch 53, lbc_tf_zero_pgrad). With the
+        // Zero mean pressure gradient (sw_lbc_tf_zero_pgrad). With the
         // faces prescribed, the domain is a constant-flux channel: whatever
         // the band flux lacks (on a staircase slope the pressure force on the
         // risers, which the provisional u + dt*ut does not contain) the solve
@@ -2610,7 +2609,7 @@ void Boundary_lateral<TF>::refresh_lbc_tf_periodic(const TF dt_sub)
             // p belongs to the solve of the previous RK substep. What moves u
             // over a whole step is the RK-weighted sum of the pressure force
             // of its substeps (sum_s b_s G_s, sum_s b_s = 1), not any single
-            // one: in the Axelsen test G alternates by +-3e-3 m/s2 between
+            // one: in the axelsen2009_lbc case G alternates by +-3e-3 m/s2 between
             // substeps around a mean of 1e-4. So accumulate dt*b_s*G and
             // update the velocity c once per completed step; c is constant
             // within it. In velocity and not in force units, because part of
@@ -2697,7 +2696,7 @@ void Boundary_lateral<TF>::refresh_lbc_tf_periodic(const TF dt_sub)
         balance(lbc_w, lbc_e, "u", true, md.mpicoordx == 0, md.mpicoordx == md.npx-1, budget_x);
         balance(lbc_s, lbc_n, "v", false, md.mpicoordy == 0, md.mpicoordy == md.npy-1, budget_y);
 
-        // apply_lbc_tf_rock_return.py: one line per edge pair every
+        // One line per edge pair every
         // lbc_tf_budget_every time steps, at every RK substep of that step.
         if (lbc_tf_budget_every > 0)
         {
@@ -2712,7 +2711,7 @@ void Boundary_lateral<TF>::refresh_lbc_tf_periodic(const TF dt_sub)
                 {
                     if (first)
                         std::fprintf(f,
-                                "# patch 53 LBC edge-pair budget (lbc_tf_rock_return=%s, depth=%g m)\n"
+                                "# LBC edge-pair budget (lbc_tf_rock_return=%s, depth=%g m)\n"
                                 "# fluxes kg/s (rhoref*u*face area), velocities m/s; air means before the correction\n"
                                 "# time substep pair F flux_lo flux_hi rock_lo rock_hi delta_u delta_s"
                                 " u_ns_lo u_ns_hi u_up_lo u_up_hi G c\n",

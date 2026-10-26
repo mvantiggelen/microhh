@@ -83,7 +83,6 @@ class Radiation_rrtmgp : public Radiation<TF>
         std::vector<TF>& get_surface_albedo(const std::string&)
         { throw std::runtime_error("This radiation class cannot provide a surface albedo field"); }
 
-        // Patch 63 (apply_ib_radiation.py).
         void set_ib_surface(const std::vector<TF>*, std::function<void(std::vector<TF>&)>);
 
         void exec_all_stats(
@@ -317,7 +316,7 @@ class Radiation_rrtmgp : public Radiation<TF>
         Float* sw_flux_dn_dif_inc_g;
         Float* lw_flux_dn_inc_g;
 
-        // Patch 63 (apply_ib_radiation.py): columns that start at the
+        // Columns that start at the
         // immersed-boundary surface ([radiation] sw_ib_columns).
         bool sw_ib_columns;
         const std::vector<TF>* ib_dem = nullptr;

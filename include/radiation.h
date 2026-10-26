@@ -69,7 +69,7 @@ class Radiation
         virtual std::vector<TF>& get_surface_emissivity(const std::string&) = 0;
         virtual std::vector<TF>& get_surface_albedo(const std::string&) = 0;
 
-        // Patch 63 (apply_ib_radiation.py): the immersed-boundary surface of
+        // The immersed-boundary surface of
         // every column (terrain height and a function that returns the
         // surface temperature, both with ghost cells), so that a column
         // scheme can start its columns at the IB surface. No-op by default.

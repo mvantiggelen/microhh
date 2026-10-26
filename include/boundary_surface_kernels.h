@@ -284,14 +284,14 @@ namespace Boundary_surface_kernels
     }
 
     /*
-     * apply_obuk_newton_residual.py. Is zeta a root of the MOST relation
-     * zeta = term? The Newton loops below exit on a small STEP, and also
+     * Is zeta a root of the MOST relation zeta = term? The Newton loops below exit on a small STEP, and also
      * when the finite-difference derivative drops below 1e-16 - which
      * happens far out on the near-neutral tail (L ~ 1e8-1e9), where the
      * residual is still O(1). That exit reported convergence, and since the
      * next call starts from the previous L the false neutral answer stuck
      * until Ri_b > 0.13 forced the clamp: the flux switched between a
-     * neutral and a strongly stable value (case019/020 hfss_ib jumps).
+     * neutral and a strongly stable value, which showed up as jumps in the
+     * surface heat flux.
      */
     template<typename TF>
     inline bool obuk_residual_ok(const TF zeta, const TF term)
@@ -305,7 +305,7 @@ namespace Boundary_surface_kernels
      *     h(zeta) = zeta + kappa zsl B / (du fm)^3 = 0
      * on the branch the sign of B allows (B < 0: stable, zeta > 0). As for
      * solve_zL_bisect: without a sign change the extreme zeta of that branch,
-     * which is what the zL clamp returns anyway. apply_obuk_newton_residual.py
+     * which is what the zL clamp returns anyway.
      *
      * On the stable side the relation can have TWO roots (fm falls with
      * zeta, so kappa zsl |B| / (du fm)^3 can cross zeta twice): a weakly
@@ -457,7 +457,7 @@ namespace Boundary_surface_kernels
             #endif
         }
 
-        // apply_obuk_newton_residual.py: accept Newton's L only if it is a
+        // Accept Newton's L only if it is a
         // root; otherwise bisect on the branch the sign of B allows.
         {
             const TF zeta = zsl / L;
@@ -487,8 +487,6 @@ namespace Boundary_surface_kernels
      * the far end of the bracket |zeta| dominates and h takes the sign of
      * zeta, which is the sign of db. So h always changes sign inside, and the
      * check below is a guard for the arithmetic, not for the mathematics.
-     *
-     * See apply_obuk_branch_fix.py.
      */
     template<typename TF>
     inline TF solve_zL_bisect(
@@ -632,12 +630,12 @@ namespace Boundary_surface_kernels
          * Without this the routine happily returns a near-neutral POSITIVE L
          * for a strongly convective surface layer and reports convergence,
          * because every exit test it has is about the size of the Newton step
-         * rather than about the physics. See apply_obuk_branch_fix.py.
+         * rather than about the physics.
          */
         if (L * db <= TF(0) || !std::isfinite(L))
             L = solve_zL_bisect<TF>(du, db, zsl, z0m, z0h);
 
-        // apply_obuk_newton_residual.py: and is it a ROOT? The derivative
+        // And is it a ROOT? The derivative
         // guard in the Newton loop exits on the near-neutral tail with the
         // residual still O(1) (see obuk_residual_ok).
         else

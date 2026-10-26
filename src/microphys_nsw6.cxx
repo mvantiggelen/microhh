@@ -1029,7 +1029,7 @@ void Microphys_nsw6<TF>::init()
 template<typename TF>
 void Microphys_nsw6<TF>::set_ib_surface(const std::vector<unsigned int>& k_dem)
 {
-    // Patch 62 (apply_ib_micro.py): k_dem[ij] is the first level whose
+    // k_dem[ij] is the first level whose
     // centre is above the terrain. Rain leaves the air through the bottom
     // face of that cell; below it the IB resets the fields every step.
     auto& gd = grid.get_grid_data();
@@ -1060,7 +1060,7 @@ void Microphys_nsw6<TF>::create(
         if (!k_ib.empty())
         {
             // Named as the cross-sections (rr_bot_ib, ...): "rs_ib" is the
-            // vegetation surface resistance of the IB column output (patch 65).
+            // vegetation surface resistance of the IB column output.
             stats.add_time_series("rr_bot_ib", "Mean rain rate onto the IB surface", "kg m-2 s-1", group_name);
             stats.add_time_series("rs_bot_ib", "Mean snow rate onto the IB surface", "kg m-2 s-1", group_name);
             stats.add_time_series("rg_bot_ib", "Mean graupel rate onto the IB surface", "kg m-2 s-1", group_name);
@@ -1149,7 +1149,7 @@ void Microphys_nsw6<TF>::exec(Thermo<TF>& thermo, const double dt, Stats<TF>& st
     auto tmp3 = fields.get_tmp();
     auto tmp4 = fields.get_tmp();
 
-    // Patch 62: the sedimentation flux through the bottom face of the first
+    // The sedimentation flux through the bottom face of the first
     // air cell of each column (tmp4 holds the flux, kg m-2 s-1, negative down).
     auto store_ib_precip = [&](std::vector<TF>& out, const TF* const flux)
     {
@@ -1321,7 +1321,7 @@ void Microphys_nsw6<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
             else if (it == "rg_bot")
                 cross.cross_plane(rg_bot.data(), no_offset, "rg_bot", iotime);
 
-            // Patch 62: onto the immersed boundary.
+            // Onto the immersed boundary.
             else if (it == "rr_bot_ib")
                 cross.cross_plane(rr_bot_ib.data(), no_offset, "rr_bot_ib", iotime);
             else if (it == "rs_bot_ib")

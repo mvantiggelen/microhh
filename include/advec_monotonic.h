@@ -204,7 +204,7 @@ namespace Advec_monotonic
                          // dz=15 m). First-order upwind: the donor cell, which
                          // for inflow is the ghost cell set by [boundary]
                          // sbctop. advec_s (unlimited) and advec_u/v/w already
-                         // carry this face. See apply_advec_lim_top.py.
+                         // carry this face.
                          - ( rhorefh[k+1] * ( (w[ijk+kk1] > TF(0.))
                                               ? w[ijk+kk1] * s[ijk        ]
                                               : w[ijk+kk1] * s[ijk+kk1    ] )

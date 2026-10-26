@@ -71,7 +71,7 @@ class Subdomain
         int grid_ratio_ij;
         int grid_ratio_k;
 
-        // [subdomain] interpolation=linear (patch 61).
+        // [subdomain] interpolation=linear.
         bool sw_linear = false;
 
         // Vertical window of the sub-domain, in parent heights. The child's

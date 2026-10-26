@@ -44,7 +44,7 @@ FFT<TF>::FFT(Master& masterin, Grid<TF>& gridin, Input& inputin) :
     // FFT type based on open/periodic pressure solver.
     sw_openbc = inputin.get_item<bool>  ("pres", "sw_openbc", "", false);
 
-    // apply_lbc_periodic_y.py: with [boundary_lateral] sw_periodic_y the
+    // With [boundary_lateral] sw_periodic_y the
     // domain is open (DCT) in x only, and periodic (DFT) in y.
     const bool sw_periodic_y = sw_openbc && inputin.get_item<bool>(
             "boundary_lateral", "sw_periodic_y", "", false);
@@ -152,7 +152,7 @@ void FFT<float>::load()
     int idist = gd.itot;
     int jdist = 1;
 
-    // apply_lbc_periodic_y.py: the transform kind per direction.
+    // The transform kind per direction.
     const bool dct_x = (fft_type_x == FFT_type::DCT);
     const bool dct_y = (fft_type_y == FFT_type::DCT);
     fftwf_r2r_kind kindf_i[] = {dct_x ? FFTW_REDFT10 : FFTW_R2HC};
@@ -203,7 +203,7 @@ void FFT<double>::load()
     int idist = gd.itot;
     int jdist = 1;
 
-    // apply_lbc_periodic_y.py: the transform kind per direction.
+    // The transform kind per direction.
     const bool dct_x = (fft_type_x == FFT_type::DCT);
     const bool dct_y = (fft_type_y == FFT_type::DCT);
     fftw_r2r_kind kindf_i[] = {dct_x ? FFTW_REDFT10 : FFTW_R2HC};
@@ -243,7 +243,7 @@ void FFT<float>::save()
     int idist = gd.itot;
     int jdist = 1;
 
-    // apply_lbc_periodic_y.py: the transform kind per direction.
+    // The transform kind per direction.
     const bool dct_x = (fft_type_x == FFT_type::DCT);
     const bool dct_y = (fft_type_y == FFT_type::DCT);
     fftwf_r2r_kind kindf_i[] = {dct_x ? FFTW_REDFT10 : FFTW_R2HC};
@@ -301,7 +301,7 @@ void FFT<double>::save()
     int idist = gd.itot;
     int jdist = 1;
 
-    // apply_lbc_periodic_y.py: the transform kind per direction.
+    // The transform kind per direction.
     const bool dct_x = (fft_type_x == FFT_type::DCT);
     const bool dct_y = (fft_type_y == FFT_type::DCT);
     fftw_r2r_kind kindf_i[] = {dct_x ? FFTW_REDFT10 : FFTW_R2HC};
@@ -435,7 +435,7 @@ namespace
     {
         int kk = gd.iblock*gd.jtot;
 
-        // Scaling factor DFT/DCT, per direction (apply_lbc_periodic_y.py).
+        // Scaling factor DFT/DCT, per direction.
         const TF fac_x = (fft_type_x == FFT_type::DCT) ? TF(2) : TF(1);
         const TF fac_y = (fft_type_y == FFT_type::DCT) ? TF(2) : TF(1);
 
@@ -565,7 +565,7 @@ namespace
                       Transpose<TF>& transpose,
                       FFT_type fft_type_x, FFT_type fft_type_y)
     {
-        // Scaling factor DFT/DCT, per direction (apply_lbc_periodic_y.py).
+        // Scaling factor DFT/DCT, per direction.
         const TF fac_x = (fft_type_x == FFT_type::DCT) ? TF(2) : TF(1);
         const TF fac_y = (fft_type_y == FFT_type::DCT) ? TF(2) : TF(1);
 

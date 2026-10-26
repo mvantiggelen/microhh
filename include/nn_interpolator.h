@@ -70,7 +70,7 @@ class NN_interpolator
         std::vector<int> nn_j;
         std::vector<int> nn_k;
 
-        // [subdomain] interpolation=linear (patch 61): offsets of the targets
+        // [subdomain] interpolation=linear: offsets of the targets
         // from their nearest parent point, and the parent coordinates.
         bool sw_linear;
         std::vector<TF> off_i;

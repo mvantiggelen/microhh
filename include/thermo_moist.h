@@ -58,7 +58,7 @@ class Thermo_moist : public Thermo<TF>
         Thermo_moist(Master&, Grid<TF>&, Fields<TF>&, Input&, const Sim_mode); ///< Constructor of the moist thermodynamics class.
         virtual ~Thermo_moist(); ///< Destructor of the moist thermodynamics class.
 
-        void set_basestate_air_levels(const std::vector<unsigned int>&); // apply_basestate_air.py
+        void set_basestate_air_levels(const std::vector<unsigned int>&);
 
         void init();
         void create(Input&, Netcdf_handle&, Stats<TF>&, Column<TF>&, Cross<TF>&, Dump<TF>&, Timeloop<TF>&);
@@ -127,7 +127,7 @@ class Thermo_moist : public Thermo<TF>
         void update_time_dependent(Timeloop<TF>&); ///< Update the time dependent parameters.
 
     private:
-        // apply_basestate_air.py: with an immersed boundary, swupdatebasestate
+        // With an immersed boundary, swupdatebasestate
         // builds the base state from the slab means of the AIR cells only
         // (k >= bs_k_air[ij]); levels without air are extrapolated.
         std::vector<unsigned int> bs_k_air;
