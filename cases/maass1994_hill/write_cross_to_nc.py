@@ -10,21 +10,19 @@ or, from a case generator,
     install(rundir, 'maass1994', window=10.)
 
 It writes, in the run folder:
-    cross_to_nc.sh   Slurm job (Atos, qos nf, one task with one CPU per
-                     crosslist entry) that converts the cross-section
-                     binaries to netCDF. It finds its own folder, so it
-                     can be submitted from anywhere:
-                         sbatch /path/to/run_dir/cross_to_nc.sh
-                     and it also runs without Slurm:
+    cross_to_nc.sh   job that converts the cross-section binaries to
+                     netCDF (one task with one CPU per crosslist entry).
+                     It runs on a laptop and on a SLURM cluster:
                          bash cross_to_nc.sh
-    cross_to_nc.py   the open_bc copy of MicroHH's converter (IB mask with
+                         sbatch cross_to_nc.sh     (from the run folder)
+    cross_to_nc.py   an extended copy of MicroHH's converter (IB mask with
                      --mask-ib, odd IB file stems, terrain-following planes,
                      several xz/yz slices; see its header)
     microhh_tools.py the MicroHH module it imports
     write_cross_to_nc.py  this script, so the folder can redo it
 
-Both .py files are taken from the folder of this script, else from
-open_bc/ two levels up (the case folders sit in open_bc/cases/<case>/).
+Both .py files are taken from the folder of this script, else from one or
+two folders up.
 
 Options in the job (environment variables at submit time):
     T0, T1   first and last time to convert [s] (default: all)
@@ -48,7 +46,7 @@ def _find(name):
         if os.path.isfile(p):
             return os.path.abspath(p)
     raise SystemExit(f'write_cross_to_nc: {name} not found next to {__file__} '
-                     f'or in open_bc/ (two levels up)')
+                     f'or one or two folders up')
 
 
 def _crosslist(ini_path):
@@ -72,7 +70,6 @@ def _crosslist(ini_path):
 
 JOB = r"""#!/bin/bash
 #SBATCH --job-name=@NAME@_cross2nc
-#SBATCH --qos=nf
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=@NCPU@         # crosslist has @NCROSS@ entries
@@ -82,14 +79,14 @@ JOB = r"""#!/bin/bash
 #SBATCH --error=%x.%j.out
 #
 # Cross-section binaries -> netCDF for this run folder (written by
-# write_cross_to_nc.py). Submit from anywhere:
-#     sbatch /path/to/run_dir/cross_to_nc.sh
-# or run it directly: bash cross_to_nc.sh
-# Options at submit time: T0, T1 (s, the times to convert), CASE (another
-# folder), WINDOW (s, time-mean files <stem>.<mode>.hourly.nc; 0 = none).
+# write_cross_to_nc.py). On a laptop:   bash cross_to_nc.sh
+# On a SLURM cluster, from the run folder: sbatch cross_to_nc.sh
+# Options (environment variables): T0, T1 (s, the times to convert), CASE
+# (another folder), WINDOW (s, time-mean files <stem>.<mode>.hourly.nc; 0 = none),
+# MICROHH_ENV (a script to source first, e.g. module loads).
 #
-# cross_to_nc.py is shared-memory multiprocessing, not MPI: one task with
-# one CPU per crosslist entry at most, on a shared node (qos nf).
+# cross_to_nc.py uses shared-memory multiprocessing, not MPI: one task with
+# at most one CPU per crosslist entry.
 
 set -euo pipefail
 
@@ -108,10 +105,8 @@ fi
 cd "${CASE:-$HERE}"
 echo "converting cross-sections in $(pwd)"
 
-# Environment: the same file the run job uses, if it exists; python3 module.
-ENVF=${MICROHH_ENV:-$HOME/microhh_env.sh}
-[ -f "$ENVF" ] && source "$ENVF"
-module load python3 2>/dev/null || true
+# Optional environment (module loads); python3 needs numpy and netCDF4.
+if [ -n "${MICROHH_ENV:-}" ]; then source "$MICROHH_ENV"; fi
 
 for f in cross_to_nc.py microhh_tools.py; do
     if [ ! -f "$f" ] && [ -f "$HERE/$f" ]; then cp "$HERE/$f" .; fi

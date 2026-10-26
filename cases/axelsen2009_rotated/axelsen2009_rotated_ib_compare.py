@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Test T1: the rotated-frame P1 twins (native surface vs flat IB, written by
+The rotated-frame P1 twins (native surface vs flat IB, written by
 axelsen2009_rotated_ib_input.py) against each other, the paper's LES and,
 optionally, the open-LBC run's slope average.
 
-    python3 axelsen2009_rotated_ib_compare.py --native T1/native --ib T1/ib [T1_alloff/ib ...] [--label ...]
+    python3 axelsen2009_rotated_ib_compare.py --native runs/P1/native --ib runs/P1/ib [runs/P1_off/ib ...] [--label ...]
             [--lbc-metrics ../axelsen2009_lbc/runs/P1_lbc/figs/P1_lbc_metrics.json] [--tavg 1800]
-            [--out T1/T1_compare.png]
+            [--out runs/P1/rotated_compare.png]
 
 From the [stats] profiles (horizontal means; ib/ level k_ib + k is native/
 level k). In the rotated frame of [thermo] swthermo=buoy the buoyancy
@@ -18,7 +18,7 @@ Panels: (a) u_s/V, (b) b/B, (c) total momentum flux (resolved + SFS)/V^2,
 (d) SFS TKE and resolved TKE, all over the last --tavg s against n/H; (e)
 the jet maximum u_max/V and (f) the first-level b/B against t/tau_osc.
 Prints the numbers that matter for the IB question. With --momentum vr
-(velocity reconstruction, patch 59) the [stats] flux AT the surface face is not the
+(velocity reconstruction) the [stats] flux AT the surface face is not the
 wall stress: it is the SFS flux between the reconstructed first air point
 and the zeroed point below the surface. Compare the flux one dz higher
 (printed as "at n = dz"), where both runs carry the real flux.
@@ -120,11 +120,11 @@ def main():
     for i in (4, 5):
         ax[i].grid(alpha=0.3)
     ax[0].legend(fontsize=7); ax[3].legend(fontsize=6.5); ax[4].legend(fontsize=7)
-    fig.suptitle(f'T1: Axelsen P1 in the rotated frame (alpha {p["alpha_deg"]:g} deg), native surface vs flat IB, '
+    fig.suptitle(f'Axelsen P1 in the rotated frame (alpha {p["alpha_deg"]:g} deg), native surface vs flat IB, '
                  f'dx {p["dx"]:g} m, dz {p["dz"]:g} m; profiles {t0:.0f}-{tend:.0f} s '
                  f'({t0 / tau:.2f}-{tend / tau:.2f} tau_osc)', fontsize=10)
     fig.tight_layout()
-    out = a.out or os.path.join(os.path.dirname(os.path.abspath(a.native)), 'T1_compare.png')
+    out = a.out or os.path.join(os.path.dirname(os.path.abspath(a.native)), 'rotated_compare.png')
     fig.savefig(out, dpi=110)
     print('wrote', out)
     print(f'V {V:.3f} m/s, B {B:.5f} m/s2, H {H:.1f} m, tau_osc {tau:.0f} s; window {t0:.0f}-{tend:.0f} s')

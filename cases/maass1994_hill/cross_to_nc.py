@@ -40,7 +40,7 @@
 #      usual relative paths, so this can live next to the case.
 #   5. TERRAIN-FOLLOWING PLANES. [IB] sw_tf_cross writes <var>_tf<h> - <var>
 #      at h metres above the LOCAL surface, one plane per
-#      [IB] tf_cross_heights entry (patches/apply_ib_tf_cross.py). The
+#      [IB] tf_cross_heights entry (develop_openbc branch). The
 #      crosslist names them once, as `thl_tf`; the files carry the height.
 #      expand_tf_variables() turns the one into the other, they are never
 #      given a masked `_ib` copy (a terrain-following plane is air in every
@@ -128,8 +128,8 @@ def load_dem(itot, jtot, path='dem.0000000'):
 
 
 # Terrain-following xy planes written by [IB] sw_tf_cross: <var>_tf<h> is
-# <var> interpolated to h metres above the LOCAL surface in every column (see
-# patches/apply_ib_tf_cross.py). Two things follow from that and are handled
+# <var> interpolated to h metres above the LOCAL surface in every column
+# (develop_openbc branch). Two things follow from that and are handled
 # below:
 #
 #   1. The crosslist says `thl_tf`, but the FILES are thl_tf10, thl_tf50, ...
@@ -156,7 +156,7 @@ def expand_tf_variables(variables):
     [cross] crosslist. A bare name with no files is reported rather than
     silently dropped - that is what "I asked for the planes and got nothing"
     looks like, and it usually means the run had sw_tf_cross off or the
-    binary was built without patches/apply_ib_tf_cross.py.
+    binary does not have the terrain-following planes (develop_openbc).
     """
     out = []
     for v in variables:
@@ -170,8 +170,8 @@ def expand_tf_variables(variables):
                 found.add(stem)
         if not found:
             print('{}: no terrain-following planes on disk. Was '
-                  '[IB] sw_tf_cross on, and is the binary patched with '
-                  'apply_ib_tf_cross.py?'.format(v))
+                  '[IB] sw_tf_cross on, and is the binary built from the '
+                  'develop_openbc branch?'.format(v))
             continue
         names = sorted(found, key=tf_height)
         print('{} -> {}'.format(v, ', '.join(names)))
@@ -277,9 +277,9 @@ WIND_PAIRS = [
     # (u stem, v stem, output stem, variable suffix)
     #
     # `u`/`v` are the raw prognostic components, stored STAGGERED at xh and yh,
-    # so they are brought to the cell centre first. The `_ib` diagnostics from
-    # apply_ib_surface_diag.py are already co-located there - the patch
-    # interpolates before it applies the MOST ratio - so they are used as they
+    # so they are brought to the cell centre first. The `_ib` surface
+    # diagnostics are already co-located there - MicroHH interpolates before
+    # it applies the MOST ratio - so they are used as they
     # are. _load_centred() tells the two apart from the file's own dimensions
     # rather than from the name.
     ('u',        'v',        'wind',        ''),

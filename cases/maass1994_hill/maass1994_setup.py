@@ -18,7 +18,7 @@ The paper's flow (its eqs. 1-4, Table I, Fig. 1):
     - DNS, case 4: 160 x 80 x 64, terrain-following, stretched vertically
     - results at t = 60 H/Um, averaged over y and over the four waves
 
-Here the lower wall is a DEM for the IB (staircase), the wall stress comes
+Here the lower wall is a DEM for the IB (a staircase of grid cells), the wall stress comes
 from the IB wall model (MOST with a smooth-wall roughness length, neutral)
 and the resolved pressure (form drag), and the top wall is MicroHH's
 no-slip top boundary. Units: H = 1 m, Um = 1 m/s, nu = 1/Re m2/s, so one
@@ -27,24 +27,28 @@ in Pa is a kinematic stress in Um^2.
 
 Usage:
     python3 maass1994_setup.py --grid small --outdir run_small --endtime 20
-    python3 maass1994_setup.py --grid paper --outdir run_paper            # Atos
+    python3 maass1994_setup.py --grid paper --outdir run_paper            # cluster
     python3 maass1994_setup.py --grid paper --variant ghost --outdir run_paper_ghost
 
-Variants (IB momentum; 20 Oct 2026):
-    staircase (default) the case026 method: MOST stress as a source term
-           (patch 6), strain-MOST (7), kinematic floor-face w (32), momentum
-           exchanged with the terrain only through MOST and pressure (49, 51).
-           Needs the staircase tree (patches/reapply_all.sh <tree> staircase).
-    The others need the vr tree (patches/reapply_all.sh <tree> vr):
+Variants (how the IB applies the wall stress to the velocity):
+    staircase (default) the wall stress of the MOST wall model is applied as
+           a momentum source in the air cells next to the terrain, the eddy
+           viscosity there is rescaled to match it, w on the floor faces
+           follows the sub-grid slope, and momentum is exchanged with the
+           terrain only through MOST and pressure. Works with the
+           develop_openbc branch of MicroHH.
+    The others need a MicroHH build with velocity reconstruction (not in
+    develop_openbc):
     vr     velocity reconstruction on the true wave surface: the
            first air points get the MOST profile along the surface normal,
            points below the surface 0, the terrain in the pressure solve
-           (sw_momentum_reconstruct, patches/README.md section 59)
-    ghost  the upstream Tseng & Ferziger ghost cells for the velocity (no
-           wall model on momentum), for comparison
+           (sw_momentum_reconstruct)
+    vrlin  the same with a linear (viscous-sublayer) profile
+    ghost  the standard MicroHH ghost cells (Tseng & Ferziger 2003) for the
+           velocity (no wall model on momentum), for comparison
 
 Writes in --outdir: maass1994.ini, maass1994_input.nc, dem.0000000,
-job_atos.sh, cross_to_nc.sh (+ cross_to_nc.py, microhh_tools.py), and copies maass1994_plot.py, reference_hudson1996.json (the LDV data the plots use) and reference_maass1994.json
+job.sh, cross_to_nc.sh (+ cross_to_nc.py, microhh_tools.py), and copies maass1994_plot.py, reference_hudson1996.json (the LDV data the plots use) and reference_maass1994.json
 (when found next to this script) so that the directory is self-contained.
 """
 import argparse
@@ -156,9 +160,9 @@ def write_ini(fn, p):
     lin = p['variant'] == 'vrlin'
     stair = p['variant'] == 'staircase'
     ib_mom = (
-        "# momentum, variant 'staircase' (case026): MOST stress as a source term\n"
-        "# (patch 6), strain-MOST (7), kinematic floor-face w (32), momentum\n"
-        "# exchanged with the terrain only through MOST and pressure (49, 51)\n"
+        "# momentum, variant 'staircase': MOST wall stress as a source term,\n"
+        "# eddy viscosity rescaled to it, w on the floor faces along the sub-grid\n"
+        "# slope, momentum exchanged with the terrain only through MOST and pressure\n"
         "sw_momentum_flux=true\n"
         "sw_momentum_flux_vertical=true\n"
         "sw_strain_most=true\n"
@@ -167,7 +171,7 @@ def write_ini(fn, p):
         "sw_impermeable=false\n"
         "sw_wall_kinematic=true\n"
         "sw_momentum_air_only=true\n") if stair else ((
-        "# momentum: velocity reconstruction (patch 59). R points (air next to the\n"
+        "# momentum: velocity reconstruction. R points (air next to the\n"
         "# true bilinear wave surface) get the MOST profile along the normal,\n"
         "# image point at max(1.5 dz, d + dz); S points (below it) are 0; one\n"
         "# pressure solve over the whole domain, terrain included.\n"
@@ -179,11 +183,11 @@ def write_ini(fn, p):
         + "reconstruct_dz=1.5\n"
         "reconstruct_diag_every=300\n"
         + ("reconstruct_stress=false\n" if lin else
-           "# patch 60: at least the MOST eddy viscosity on the faces between the R\n"
+           "# at least the MOST eddy viscosity on the faces between the R\n"
            "# points and the free air (the stress the air loses)\n"
            "reconstruct_stress=true\n")) if vr else (
-        "# variant 'ghost': upstream ghost cells for u, v, w (no wall model on\n"
-        "# momentum; patch 59 removed the MOST stress source of patch 6)\n"
+        "# variant 'ghost': standard MicroHH ghost cells for u, v, w (no wall\n"
+        "# model on momentum)\n"
         "sw_momentum_reconstruct=false\n"))
     txt = f"""# Maass and Schumann (1994) wavy-wall channel on the IB MicroHH.
 # Generated by maass1994_setup.py --grid {p['grid']} --variant {p['variant']}
@@ -203,7 +207,7 @@ zsize={p['zsize']:.10g}
 swspatialorder=2
 
 [advec]
-# 2i5 as in the production runs
+# 2i5, as recommended with the IB
 swadvec=2i5
 cflmax=1.2
 
@@ -274,22 +278,21 @@ sbcbot=dirichlet
 sbot[thl]={TH0:g}
 sbot[qt]=0.
 sbot[s]=1.
-# MOST along the local slope with the wall-normal distance (patch 30)
+# MOST along the local slope with the wall-normal distance
 sw_wall_slope=true
 wall_dn_min=0.1
-# patch 52: rock evisc capped after the Mason and MOST wall damping
-# (evisc_solid=cap for a binary without patch 52)
+# eddy viscosity inside the terrain capped after the Mason and MOST wall
+# damping (evisc_solid=cap for older MicroHH versions)
 evisc_solid={p['evisc_solid']}
 sw_mason_wall=true
 sw_blank_solid=true
 sw_blank_solid_tend=true
 sw_advec_wall=true
 sw_advec_wall_conserve=true
-{ib_mom}# patch 48: IB drag and fluxes as interval means
+{ib_mom}# IB drag and fluxes written as means over the output interval
 sw_flux_accum=true
-# wall model at an image point wall_sample_dz*dz along the normal off the
-# true surface, as in the production runs (patch 45, racmo_to_openbc
-# IB_WALL_SAMPLE)
+# wall model evaluated at a point wall_sample_dz*dz along the normal above
+# the true surface (the recommended IB setting)
 sw_wall_sample=true
 wall_sample_dz=1.5
 # diagnostic heights (default 10 m and 2 m, far too high here)
@@ -345,64 +348,58 @@ dumplist=u,v,w,p
 
 JOB = r"""#!/bin/bash
 #
-# Atos (ECMWF) job for one maass1994 run directory (written by
-# maass1994_setup.py). Submit from anywhere:
-#     sbatch /path/to/run_dir/job_atos.sh
-# The job finds its own directory; no paths to edit.
+# Job for one maass1994 run directory (written by maass1994_setup.py).
+# It runs on a laptop or workstation as well as on a SLURM cluster:
+#
+#   bash job.sh        # laptop / workstation (uses mpirun)
+#   sbatch job.sh      # SLURM cluster such as Snellius (check the #SBATCH lines first)
+#
+# Settings you can pass as environment variables:
+#   MICROHH_BIN  the MicroHH binary (default ./microhh)
+#   MICROHH_ENV  a script to source first, e.g. the module loads of your build
+#   MPIRUN       the MPI launcher (default: "srun -n" in a SLURM job, else "mpirun -np")
 #
 #SBATCH --job-name=maass1994_@GRID@
-#SBATCH --qos=np
-#SBATCH --nodes=1
 #SBATCH --ntasks=@NP@
-#SBATCH --ntasks-per-node=@NP@
-#SBATCH --hint=nomultithread
 #SBATCH --time=@WALL@
 #SBATCH --output=%x.%j.out
 #SBATCH --error=%x.%j.out
+##SBATCH --partition=...             # add the partition / account your cluster needs
 
 set -eu
 
-# The directory of this script, also under Slurm (which runs a copy of it):
-# 1. the Command= of the job, 2. the submit directory, 3. dirname $0.
-HERE=""
-if [ -n "${SLURM_JOB_ID:-}" ]; then
-    CMD=$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null | awk -F= '/^ *Command=/{print $2; exit}')
-    CMD=${CMD%% *}
-    [ -n "$CMD" ] && [ -f "$CMD" ] && HERE=$(cd "$(dirname "$CMD")" && pwd)
+# Run in the folder of this script (SLURM runs a copy of it, so use the submit directory there).
+HERE=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+if [ ! -f "$HERE/maass1994.ini" ]; then
+    echo "ERROR: no maass1994.ini in $HERE: submit the job from the run directory"
+    exit 1
 fi
-if [ -z "$HERE" ] && [ -n "${SLURM_SUBMIT_DIR:-}" ] && [ -f "$SLURM_SUBMIT_DIR/maass1994.ini" ]; then
-    HERE=$SLURM_SUBMIT_DIR
-fi
-[ -z "$HERE" ] && HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE"
 echo "run directory: $HERE"
 
-# The modules the binary was built with (adapt the path once in your env).
-source ${MICROHH_ENV:-$HOME/microhh_env.sh}
-export OMPI_MCA_coll_hcoll_enable=0
+# Optional: the modules of the build. Python needs numpy, netCDF4 and matplotlib.
+if [ -n "${MICROHH_ENV:-}" ]; then source "$MICROHH_ENV"; fi
 
-# The binary: ./microhh, else $MICROHH_BIN.
-if [ ! -x ./microhh ]; then
-    if [ -n "${MICROHH_BIN:-}" ] && [ -x "$MICROHH_BIN" ]; then
-        ln -sf "$MICROHH_BIN" ./microhh
-    else
-        echo "ERROR: no ./microhh here and MICROHH_BIN not set"; exit 1
-    fi
-fi
+BIN=${MICROHH_BIN:-./microhh}
+[ -x "$BIN" ] || { echo "ERROR: no MicroHH binary at $BIN (copy it here or set MICROHH_BIN)"; exit 1; }
 
 npx=$(awk -F= '/^npx=/{print $2}' maass1994.ini)
 npy=$(awk -F= '/^npy=/{print $2}' maass1994.ini)
 NP=$((npx*npy))
-echo "MPI: $npx x $npy = $NP tasks"
+if [ -z "${MPIRUN:-}" ]; then
+    if [ -n "${SLURM_JOB_ID:-}" ]; then MPIRUN="srun -n"; else MPIRUN="mpirun -np"; fi
+fi
+RUN="$MPIRUN $NP"
+echo "MPI: $npx x $npy = $NP tasks ($RUN)"
 
 if [ -e grid.0000000 ]; then
     echo "ERROR: grid.0000000 exists: this directory has been initialised already."
-    echo "       Regenerate it with maass1994_setup.py for a clean start."
+    echo "       Make a new one with maass1994_setup.py for a clean start."
     exit 1
 fi
 
-srun -n $NP ./microhh init maass1994
-srun -n $NP ./microhh run maass1994
+$RUN "$BIN" init maass1994
+$RUN "$BIN" run maass1994
 
 python3 maass1994_plot.py --rundir . --outdir figs --tavg @TAVG@ || \
     echo "plotting failed (the run itself finished)"
@@ -415,10 +412,11 @@ def main():
     ap.add_argument('--grid', choices=GRIDS.keys(), default='paper')
     ap.add_argument('--variant', choices=('staircase', 'vr', 'vrlin', 'ghost'),
                     default='staircase',
-                    help="staircase (default): the case026 IB momentum method, the staircase tree; "
-                         "vr: velocity reconstruction (patch 59); vrlin: the same with a linear "
-                         "(viscous-sublayer) profile and reconstruct_stress=false; ghost: upstream "
-                         "ghost cells for the velocity (vr, vrlin, ghost: the vr tree)")
+                    help="staircase (default): the MOST wall stress as a momentum source; "
+                         "vr: velocity reconstruction; vrlin: the same with a linear "
+                         "(viscous-sublayer) profile and reconstruct_stress=false; ghost: standard "
+                         "MicroHH ghost cells for the velocity (vr, vrlin, ghost need a build with "
+                         "velocity reconstruction)")
     ap.add_argument('--outdir', required=True)
     ap.add_argument('--endtime', type=float, default=None,
                     help='end time in H/Um (default: 20 small, 100 otherwise)')
@@ -439,7 +437,7 @@ def main():
                     help='Smagorinsky constant (default 0.1; 0.15 on the small '
                          'grid, where 0.1 is unstable at the staircase steps)')
     ap.add_argument('--evisc-cap', action='store_true',
-                    help='[IB] evisc_solid=cap instead of cap_last (binary without patch 52)')
+                    help='[IB] evisc_solid=cap instead of cap_last (older MicroHH versions)')
     ap.add_argument('--dump-dt', type=float, default=None,
                     help='interval of the 3-D dumps (H/Um)')
     ap.add_argument('--tavg', type=float, default=None,
@@ -520,9 +518,9 @@ def main():
     wall = '%02d:00:00' % min(48, int(wall_h * 2 + 1))
     job = (JOB.replace('@GRID@', a.grid).replace('@NP@', str(np_))
               .replace('@WALL@', wall).replace('@TAVG@', '%g' % tavg))
-    with open(os.path.join(a.outdir, 'job_atos.sh'), 'w') as f:
+    with open(os.path.join(a.outdir, 'job.sh'), 'w') as f:
         f.write(job)
-    os.chmod(os.path.join(a.outdir, 'job_atos.sh'), 0o755)
+    os.chmod(os.path.join(a.outdir, 'job.sh'), 0o755)
 
     # cross_to_nc.sh + cross_to_nc.py + microhh_tools.py; no time-mean
     # files by default (WINDOW=10 at submit time for means over 10 H/Um)

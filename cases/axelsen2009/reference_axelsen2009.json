@@ -1,0 +1,26 @@
+{
+ "_source": "Axelsen and van Dop (2009), Acta Geophys. 57, 803-836, doi:10.2478/s11600-009-0041-6. Table 1 and text; profile numbers read BY EYE from Figs. 3a, 4, 6, 8, 9, 10, 11 (allow +-10 % on u/V, +-0.05 on z/H, +-1 K on theta_a0).",
+ "cases": {
+  "A1": {"alpha_deg": 10.0, "Fs": 4.3e-3,  "N": 0.0099, "z0": 0.2,    "theta_a0_K": 300.0,
+         "tau_osc_table_s": 3700, "glacier": false,
+         "les": {"umax_over_V": 2.6, "zj_over_H": 0.2, "counterflow_z_over_H": 6.0},
+         "notes": "anabatic, Schumann (1990) D10; theta_a0 not given (300 K assumed); paper domain 1700 x 850 x 600 m, 128 x 64 x 60"},
+  "P1": {"alpha_deg": 5.0,  "Fs": -1.2e-3, "N": 0.0121, "z0": 4.4e-3, "theta_a0_K": 284.65,
+         "tau_osc_table_s": 6600, "glacier": true, "site": "Pasterze A1, JD 212 10:30, 2100 m asl",
+         "les": {"umax_over_V": 16.0, "zj_over_H": 0.15, "b1_over_B": -65.0, "bs_over_B": -73.0, "zinv_over_H": 0.4},
+         "obs": {"umax_over_V": 14.5, "zj_over_H": 0.15},
+         "notes": "theta_a0 = 11.5 C from Fig. 4a (by eye)"},
+  "P2": {"alpha_deg": 5.0,  "Fs": -1.5e-3, "N": 0.0123, "z0": 4.4e-3, "theta_a0_K": 283.65,
+         "tau_osc_table_s": 6500, "glacier": true, "site": "Pasterze A1, JD 213 07:30",
+         "les": {"umax_over_V": 16.5, "zj_over_H": 0.12, "b1_over_B": -60.0},
+         "notes": "theta_a0 = 10.5 C from Fig. 4b (by eye)"},
+  "V1": {"alpha_deg": 4.5,  "Fs": -0.6e-3, "N": 0.0112, "z0": 0.02,   "theta_a0_K": 280.65,
+         "tau_osc_table_s": 7200, "glacier": true, "site": "Vatnajokull U3, JD 188 13:15, 170 m asl",
+         "les": {"umax_over_V": 16.5, "zj_over_H": 0.2, "b1_over_B": -63.0},
+         "notes": "Fs fitted by the authors (text: -5.7e-4); theta_a0 = 7.5 C from Fig. 10a (by eye)"},
+  "V2": {"alpha_deg": 4.5,  "Fs": -0.9e-3, "N": 0.0137, "z0": 0.02,   "theta_a0_K": 280.65,
+         "tau_osc_table_s": 5800, "glacier": true, "site": "Vatnajokull U3, JD 189 02:45",
+         "les": {"umax_over_V": 16.0, "zj_over_H": 0.18, "b1_over_B": -63.0},
+         "notes": "Fs fitted by the authors; theta_a0 = 7.5 C from Fig. 10b (by eye)"}
+ }
+}

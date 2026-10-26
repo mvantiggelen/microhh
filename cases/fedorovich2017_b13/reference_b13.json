@@ -1,0 +1,20 @@
+{
+ "source": "Fedorovich, Gibbs & Shapiro (2017), J. Atmos. Sci. 74, 2813-2834, doi:10.1175/JAS-D-17-0013.1, case B13 (DNS, slope-following frame, dx = 4 m, nu = 1 m2/s).",
+ "how_obtained": "Read by eye from Figs. 10a, 11a,c, 12a and 13a and from the text of section 5b. Not digitised: treat as +- one contour interval / +- 50 m / +- 0.5 h.",
+ "metrics": {
+  "jet_max_V_over_Vg":      {"value": 1.5,  "note": "Fig. 12a/11c: max |V|/|Vg| ~1.45-1.5"},
+  "jet_height_m":           {"value": 400,  "note": "Fig. 12a: core 350-450 m AGL"},
+  "jet_time_h":             {"value": 10.5, "note": "Fig. 12a: strongest 9-11.5 h; text: jet developed by 39600 s"},
+  "tke_collapse_h":         {"value": 4.0,  "note": "Fig. 10a/text: TKE drops to very low values within ~1 h after sunset (3 h)"},
+  "tke_reemergence_h":      {"value": 11.0, "note": "Fig. 10a/text: turbulence re-emerges ~8 h after sunset, remixing 39600-46800 s"},
+  "u_over_Vg_250m_sunset":  {"value": -0.25, "note": "Fig. 13a/11c: upslope mixed-layer u at sunset"},
+  "v_over_Vg_250m_sunset":  {"value": 0.65, "note": "Fig. 13a/11c: mixed-layer v at sunset"},
+  "max_edge_minus_interior_v_over_Vg": {"value": 0.0, "note": "not from the paper: the boundary-contamination check, ideally << 0.1"}
+ },
+ "qualitative": [
+  "Daytime CBL (TKE) reaches ~1000 m by 3 h (Fig. 10a).",
+  "After the jet collapse at ~11.5-12 h a weaker elevated jet remains near 600 m (46800 s), fading towards 15 h.",
+  "The re-emerged turbulent layer is 600-700 m deep from 12 to 15 h.",
+  "The flat twin B11 (alpha = 0) does NOT remix: the jet survives the night (Fig. 14a)."
+ ]
+}

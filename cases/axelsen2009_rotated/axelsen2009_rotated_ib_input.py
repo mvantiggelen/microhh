@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Test T1: does the IB wall model reproduce MicroHH's own surface in the
-ROTATED slope frame (no staircase)?
+Does the IB wall model reproduce MicroHH's own surface? A test in the
+ROTATED slope frame, where the IB surface is flat (no staircase steps).
 
-    python3 axelsen2009_rotated_ib_input.py --outdir runs/T1 [--momentum staircase|vr]
+    python3 axelsen2009_rotated_ib_input.py --outdir runs/P1 [--momentum staircase|vr]
             [--itot 64 --dx 4 --dz 1 --lz 128] [--k-ib 4] [--endtime 3600] [--npx 1 --npy 2]
 
 Writes two run directories with the same Axelsen and van Dop (2009) case
@@ -19,13 +19,14 @@ spacing, closure, noise and surface buoyancy flux Fs:
            the axelsen2009_lbc runs (sw_wall_slope, sw_mason_wall,
            sw_wall_sample, evisc_solid = cap_last, sw_advec_wall,
            sw_blank_solid, sw_flux_accum), [IB] sbot[b] = Fs, and the
-           momentum method of --momentum: staircase (default; case026:
-           sw_momentum_flux, sw_strain_most, sw_wall_kinematic,
-           sw_momentum_air_only; the staircase tree) or vr (velocity
-           reconstruction, patches 59-60; the vr tree)
+           momentum method of --momentum: staircase (default: the MOST
+           wall stress as a source term; sw_momentum_flux, sw_strain_most,
+           sw_wall_kinematic, sw_momentum_air_only) or vr (velocity
+           reconstruction; needs a MicroHH build with it)
 
-ib/ level k_ib + k is native/ level k. Needs patch 55 (apply_ib_buoy.py,
-the IB with thermo buoy). Compare with axelsen2009_rotated_ib_compare.py.
+ib/ level k_ib + k is native/ level k. Needs MicroHH from the develop_openbc
+branch (the IB with [thermo] swthermo=buoy). Compare with
+axelsen2009_rotated_ib_compare.py.
 """
 import argparse
 import json
@@ -39,21 +40,21 @@ P1 = dict(alpha_deg=5.0, Fs=-0.0012, N=0.0121, z0=0.0044)
 
 
 def momentum_block(a):
-    """The IB momentum keys of --momentum (staircase: case026; vr: patches 59-60)."""
+    """The IB momentum keys of --momentum (staircase or vr, velocity reconstruction)."""
     if a.momentum == 'vr':
-        return f"""# patch 59: velocity reconstruction (MOST profile along the normal at the
+        return f"""# velocity reconstruction (MOST profile along the normal at the
 # first air points, 0 below the surface, terrain in the pressure solve)
 sw_momentum_reconstruct={a.momentum_reconstruct}
 reconstruct_profile=most
 reconstruct_dz={a.reconstruct_dz:g}
 reconstruct_diag_every=300
-# patch 60: at least the MOST eddy viscosity on the faces between the R
+# at least the MOST eddy viscosity on the faces between the R
 # points and the free air (the stress the air loses)
 reconstruct_stress={a.reconstruct_stress}
 """
-    return f"""# momentum, staircase (case026): MOST stress as a source term (patch 6),
-# strain-MOST (7), kinematic floor-face w (32), momentum exchanged with the
-# terrain only through MOST and pressure (49, 51)
+    return f"""# momentum, staircase: MOST wall stress as a source term, eddy viscosity
+# rescaled to it, w on the floor faces along the sub-grid slope, momentum
+# exchanged with the terrain only through MOST and pressure
 sw_momentum_flux=true
 sw_momentum_flux_vertical=true
 sw_strain_most={a.strain_most}
@@ -120,8 +121,7 @@ z0h_max=0.1
 sw_scalar_flux=true
 sw_wall_stability_vertical=false
 sw_scalar_flux_vertical=false
-{momentum_block(a)}# Mason's wall damping with the distance to the IB surface, as in the
-# production runs (racmo_to_openbc IB_MASON_WALL). Acts on smag2 and
+{momentum_block(a)}# Mason's wall damping with the distance to the IB surface. Acts on smag2 and
 # swanisotropic; tke2 ignores it (its wall cell is not IB-aware).
 sw_mason_wall=true
 evisc_solid=cap_last
@@ -132,9 +132,8 @@ sw_blank_solid_tend=true
 sw_advec_wall={a.advec_wall}
 sw_advec_wall_conserve=true
 sw_flux_accum=true
-# wall model at an image point wall_sample_dz*dz along the normal off the
-# true surface, as in the production runs (patch 45, racmo_to_openbc
-# IB_WALL_SAMPLE); --wall-sample false samples at the
+# wall model evaluated at a point wall_sample_dz*dz along the normal above
+# the true surface; --wall-sample false samples at the
 # first air level, as the native surface does
 sw_wall_sample={a.wall_sample}
 wall_sample_dz=1.5
@@ -143,7 +142,7 @@ flux_ds_max=0.3
 sbcbot=flux
 sbot[b]={P1['Fs']:g}
 """ + ("sbot[sgstke]=0.\n" if a.sgs == 'tke2' else "") + f"""""" if ib else ""
-    ini = f"""# Axelsen and van Dop (2009) P1, rotated periodic frame, {'flat IB' if ib else 'native surface'} (test T1)
+    ini = f"""# Axelsen and van Dop (2009) P1, rotated periodic frame, {'flat IB' if ib else 'native surface'}
 [master]
 npx={a.npx}
 npy={a.npy}
@@ -243,15 +242,15 @@ def main():
     ap.add_argument('--npx', type=int, default=1)
     ap.add_argument('--npy', type=int, default=2)
     ap.add_argument('--momentum', choices=('staircase', 'vr'), default='staircase',
-                    help='IB momentum method: staircase (default; case026, the staircase tree) or vr '
-                         '(velocity reconstruction, patches 59-60, the vr tree)')
+                    help='IB momentum method: staircase (default; the MOST wall stress as a source term) '
+                         'or vr (velocity reconstruction; needs a MicroHH build with it)')
     # on/off switches; the momentum ones only for their --momentum
     for s in ('wall_slope', 'advec_wall', 'wall_sample',
               'strain_most', 'wall_kinematic', 'momentum_air_only',      # staircase
               'momentum_reconstruct', 'reconstruct_stress'):             # vr
         ap.add_argument('--' + s.replace('_', '-'), default='true', choices=['true', 'false'])
     ap.add_argument('--reconstruct-dz', type=float, default=1.5,
-                    help='[IB] reconstruct_dz: image point at max(c dz, d + dz) along the normal (patch 59)')
+                    help='[IB] reconstruct_dz: image point at max(c dz, d + dz) along the normal')
     ap.add_argument('--sgs', choices=['tke2', 'smag2'], default='tke2',
                     help='SFS closure ([diff] swdiff; smag2 with cs 0.17 and Pr_t 1, as tke2 with ch1 = 1)')
     ap.add_argument('--only', choices=['native', 'ib'], default=None)

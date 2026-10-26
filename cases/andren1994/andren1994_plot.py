@@ -37,7 +37,7 @@ the mean surface stress over the window:
     cross-sections (interval means with [IB] sw_flux_accum), and likewise the
     scalar flux from s_fluxbot_ib. The statistics' u_flux at the IB floor face
     is the diffusion operator's flux with the ghost cell, which the wall model
-    removes and replaces (MICROHH_PHYSICS.md 4.16), so it is NOT the surface
+    removes and replaces, so it is NOT the surface
     stress; the plots and table use the IB value there instead.
 Both are checked against the total momentum flux profile extrapolated
 linearly to the surface from the first two half levels above it.

@@ -16,27 +16,26 @@ Usage (generate a run directory):
 
 Flat immersed-boundary variant (README, section "The flat-IB variant"):
 
-    python3 andren1994_setup.py --surface ib --outdir runs/ib       # IB floor, S5 [IB] block
+    python3 andren1994_setup.py --surface ib --outdir runs/ib       # flat IB floor
     python3 andren1994_setup.py --surface ib --ib-set sw_wall_sample=false --outdir runs/ib_nosample
     python3 andren1994_setup.py --advec 2i5 --utrans 0 --outdir runs/flat_2i5   # its flat twin
 
 With --surface ib the domain floor is buried: a constant DEM (dem.0000000)
 IB_SOLID_LEVELS*dz + IB_OFFSET*dz above it is the surface, ktot and zsize grow
 by IB_SOLID_LEVELS levels so that the air above the surface keeps the
-paper's 1500 m (to IB_OFFSET*dz) and dz = 37.5 m. The [IB] block is the one
-of the S5 production runs (IB_SWITCHES; IB momentum by --momentum: staircase,
-the case026 method and the default since 20 Oct 2026, or vr, the velocity
-reconstruction of patches 59-60),
-with z0m = z0h = 0.1 m and the paper's scalar flux as a prescribed IB flux
-(patch 35). Moist Boussinesq thermo with qt = 0 and uniform thl (the IB
-wall model needs it), 2i5 advection (as the production runs) and
-utrans = 0 (the IB ignores [grid] utrans, see README).
+paper's 1500 m (to IB_OFFSET*dz) and dz = 37.5 m. The [IB] block holds the
+recommended IB settings of the develop_openbc branch (IB_SWITCHES; the IB
+momentum method is set by --momentum, see README), with z0m = z0h = 0.1 m and
+the paper's scalar flux as a prescribed IB flux. Moist Boussinesq thermo with
+qt = 0 and uniform thl (the IB wall model needs it), 2i5 advection (as the
+recommended IB set-up) and utrans = 0 (the IB ignores [grid] utrans, see
+README).
 
 The run directory gets: andren1994.ini, andren1994_input.nc,
-case_parameters.json, job_atos.sh and a copy of this script, the plot
+case_parameters.json, job.sh and a copy of this script, the plot
 script and the reference data (so the folder is self-contained).
 
-Second mode, run by job_atos.sh between "microhh init" and "microhh run":
+Second mode, run by job.sh between "microhh init" and "microhh run":
 
     python3 andren1994_setup.py --perturb [--rundir .]
 
@@ -111,7 +110,7 @@ RES = {
 # Flat immersed-boundary variant (--surface ib)
 # ---------------------------------------------------------------------------
 # Solid levels under the IB surface: the 2i5 stencil reaches three cells into
-# the terrain plus the ghost layer (racmo_to_openbc.py IB_MIN_SOLID_LEVELS).
+# the terrain plus the ghost layer.
 IB_SOLID_LEVELS = 4
 # Height of the surface above the half level IB_SOLID_LEVELS*dz, in units of
 # dz. Not 0: a surface exactly on a cell face puts the image point of every
@@ -121,31 +120,34 @@ IB_SOLID_LEVELS = 4
 # above the surface, i.e. the same as the flat run to 0.1 %.
 IB_OFFSET = 1.e-3
 
-# The [IB] block of the S5 production runs (racmo_to_openbc.py IB_* constants
-# and its [IB] writer), with the paper's z0 and scalar flux. The momentum keys
-# come from MOMENTUM[--momentum] and are inserted where IB_SWITCHES has
-# 'MOMENTUM': 'staircase' (default) is the case026 method and needs the
-# staircase tree (patches/reapply_all.sh <tree> staircase); 'vr' is the
-# velocity reconstruction and needs the vr tree. Each entry:
-# (key, value, one-line comment). Override any of them with --ib-set key=value.
+# The recommended [IB] block of the develop_openbc branch, with the paper's z0
+# and scalar flux. The momentum keys come from MOMENTUM[--momentum] and are
+# inserted where IB_SWITCHES has 'MOMENTUM':
+#   'staircase' (default): the wall stress of the MOST wall model is applied as
+#               a momentum source in the air cells next to the terrain;
+#   'vr':       velocity reconstruction: the velocity in the air cells next to
+#               the terrain follows the MOST profile. Needs a MicroHH build
+#               with that method (not in develop_openbc).
+# Each entry: (key, value, one-line comment). Override any of them with
+# --ib-set key=value.
 MOMENTUM = {
     'staircase': [
-        ('sw_momentum_flux', 'true', 'momentum: MOST stress as a source term on u, v (patch 6)'),
-        ('sw_momentum_flux_vertical', 'true', 'risers too (S5; forced off by sw_wall_slope, none on a flat DEM)'),
-        ('sw_strain_most', 'true', 'evisc in floor cells rescaled so that K dU/dz = u*^2 (patch 7)'),
+        ('sw_momentum_flux', 'true', 'momentum: MOST wall stress as a source term on u, v'),
+        ('sw_momentum_flux_vertical', 'true', 'also on vertical terrain faces (forced off by sw_wall_slope; none on a flat DEM)'),
+        ('sw_strain_most', 'true', 'eddy viscosity next to the floor rescaled so that K dU/dz = u*^2'),
         ('sw_strain_most_vertical', 'false', ''),
         ('strain_most_min', '0.05', 'floor on that rescaling factor'),
         ('sw_impermeable', 'false', ''),
-        ('sw_wall_kinematic', 'true', 'floor-face w = u.grad(eta), terrain out of the pressure solve (patch 32)'),
-        ('sw_momentum_air_only', 'true', 'momentum exchange only through MOST and pressure (patches 49, 51; needs 2i5)'),
+        ('sw_wall_kinematic', 'true', 'w on the floor faces = u.grad(eta) (flow along the sub-grid slope); terrain out of the pressure solve'),
+        ('sw_momentum_air_only', 'true', 'momentum exchanged with the terrain only through MOST and pressure (needs 2i5)'),
     ],
     'vr': [
-        ('sw_momentum_reconstruct', 'true', 'momentum: MOST profile along the surface normal at the R points, '
-         '0 below the surface (patch 59)'),
+        ('sw_momentum_reconstruct', 'true', 'momentum: MOST profile along the surface normal in the air cells next to '
+         'the terrain (the R points), 0 below the surface'),
         ('reconstruct_profile', 'most', ''),
         ('reconstruct_dz', '1.5', 'image point at max(1.5 dz, d + dz) along the normal'),
         ('reconstruct_diag_every', '300', 'log slip, leak and IB force every 300 RK substeps'),
-        ('reconstruct_stress', 'true', 'at least the MOST eddy viscosity above the R points (patch 60)'),
+        ('reconstruct_stress', 'true', 'at least the MOST eddy viscosity above the R points'),
     ],
 }
 IB_SWITCHES = [
@@ -155,28 +157,28 @@ IB_SWITCHES = [
     ('sw_wall_model', 'most', 'Monin-Obukhov wall model on the IB floor faces'),
     ('z0m', f"{PAPER['z0']:g}", 'the paper\'s roughness length'),
     ('z0h', f"{PAPER['z0']:g}", ''),
-    ('sw_scalar_flux', 'true', 'scalars: SGS flux through the wall face replaced by the wall-model flux (patch 5)'),
+    ('sw_scalar_flux', 'true', 'scalars: SGS flux through the wall face replaced by the wall-model flux'),
     ('sw_wall_stability_vertical', 'false', ''),
     ('sw_scalar_flux_vertical', 'false', ''),
-    ('sbcbot', 'flux', 'prescribed kinematic flux per unit surface area (patch 35)'),
+    ('sbcbot', 'flux', 'prescribed kinematic flux per unit surface area'),
     ('sbot[thl]', '0.', 'neutral'),
     ('sbot[qt]', '0.', ''),
     ('sbot[s]', f"{PAPER['sflux']:g}", 'the paper\'s passive-scalar flux'),
     'MOMENTUM',
-    ('evisc_solid', 'cap_last', 'terrain evisc capped after the wall damping (patch 52)'),
-    ('dn_probe_every', '20000', 'repeat the diffusion-limit probe'),
+    ('evisc_solid', 'cap_last', 'eddy viscosity inside the terrain capped after the wall damping'),
+    ('dn_probe_every', '20000', 'how often the diffusion time-step limit is re-checked (steps)'),
     ('diag_z_mom', '10', 'heights of the terrain-following surface diagnostics (m)'),
     ('diag_z_scalar', '2', ''),
-    ('sw_wall_slope', 'true', 'MOST with the wall-normal distance to the sub-grid surface (patch 30)'),
+    ('sw_wall_slope', 'true', 'MOST with the wall-normal distance to the sub-grid surface'),
     ('wall_dn_min', '0.1', 'lower bound of that distance, in dz'),
-    ('sw_blank_solid', 'true', 'solid non-ghost cells reset every substep (patch 4)'),
-    ('sw_blank_solid_tend', 'true', 'and their tendencies zeroed (patch 39)'),
-    ('sw_advec_wall', 'true', 'air-only scalar advection next to the wall (patch 10)'),
-    ('sw_advec_wall_conserve', 'true', 'exactly conservative across wall faces (patch 38)'),
-    ('sw_mason_wall', 'true', 'Mason damping with the height above the local surface (patch 42)'),
-    ('sw_wall_sample', 'true', 'wall model evaluated at an image point wall_sample_dz*dz off the surface (patch 45)'),
+    ('sw_blank_solid', 'true', 'cells inside the terrain (not ghost cells) reset every substep'),
+    ('sw_blank_solid_tend', 'true', 'and their tendencies zeroed'),
+    ('sw_advec_wall', 'true', 'scalar advection next to the wall uses air cells only'),
+    ('sw_advec_wall_conserve', 'true', 'exactly conservative across wall faces'),
+    ('sw_mason_wall', 'true', 'Mason wall damping with the height above the local surface'),
+    ('sw_wall_sample', 'true', 'wall model evaluated at a point wall_sample_dz*dz above the surface'),
     ('wall_sample_dz', '1.5', ''),
-    ('sw_flux_accum', 'true', 'IB fluxes and drag as interval means (patch 48, output only)'),
+    ('sw_flux_accum', 'true', 'IB fluxes and drag written as means over the output interval (output only)'),
 ]
 IB_CROSS = ['ustar_ib', 'obuk_ib', 'dn_ib', 'u_ib1', 'v_ib1', 'taux_skin_ib', 'tauy_skin_ib',
             'taux_form_ib', 'tauy_form_ib', 's_fluxbot_ib']
@@ -272,9 +274,9 @@ z0h={PAPER['z0']}
 """
         lines = ['# Flat immersed-boundary surface: a constant DEM at z = %.6g m, %d levels'
                  % (g['z_surface'], g['n_solid']),
-                 '# + %g dz above the buried floor. The switches are the S5 production'
+                 '# + %g dz above the buried floor. The switches are the recommended IB'
                  % g['ib_offset'],
-                 '# block (racmo_to_openbc.py), with the paper\'s z0 and scalar flux.',
+                 '# settings, with the paper\'s z0 and scalar flux.',
                  '[IB]']
         for key, val, com in ib_switches(a.ib_set, a.momentum):
             if com:
@@ -433,84 +435,68 @@ def write_input_nc(fn, g):
 
 JOB = r"""#!/bin/bash
 #
-# Atos (ECMWF) job for one andren1994 run directory (Andren et al. 1994,
-# neutral Ekman layer). Generated by andren1994_setup.py: res=@RES@,
-# grid @ITOT@ x @JTOT@ x @KTOT@, MPI @NPX@ x @NPY@ = @NP@ tasks, endtime @ENDTIME@ s.
+# Job for one andren1994 run directory (Andren et al. 1994, neutral Ekman
+# layer). Written by andren1994_setup.py: res=@RES@, grid @ITOT@ x @JTOT@ x @KTOT@,
+# MPI @NPX@ x @NPY@ = @NP@ tasks, endtime @ENDTIME@ s.
 #
-#   sbatch /path/to/run_dir/job_atos.sh      # from anywhere
+# It runs on a laptop or workstation as well as on a SLURM cluster:
 #
-# The script finds its own directory (scontrol Command=, else the submit
-# directory, else the folder it sits in) and runs there, so no paths need
-# editing. It does:
+#   bash job.sh        # laptop / workstation (uses mpirun)
+#   sbatch job.sh      # SLURM cluster such as Snellius (check the #SBATCH lines first)
+#
+# Steps:
 #   1. microhh init
 #   2. andren1994_setup.py --perturb   (the paper's initial perturbations)
 #   3. microhh run
 #   4. andren1994_plot.py              (figures in ./figs, bulk table in the log)
-# The binary: $MICROHH_BIN if set, else @BIN@ .
+#
+# Settings you can pass as environment variables:
+#   MICROHH_BIN  the MicroHH binary (default @BIN@)
+#   MICROHH_ENV  a script to source first, e.g. the module loads of your build
+#   MPIRUN       the MPI launcher (default: "srun -n" in a SLURM job, else "mpirun -np")
 #
 #SBATCH --job-name=andren1994_@RES@
-#SBATCH --qos=@QOS@                  # nf: fractional (<= half a node, billed per core); np: whole nodes
 #SBATCH --ntasks=@NP@
-#SBATCH --hint=nomultithread          # one rank per physical core
 #SBATCH --time=@WALL@                # estimate: @EST@
 #SBATCH --output=%x.%j.out
 #SBATCH --error=%x.%j.out
+##SBATCH --partition=...             # add the partition / account your cluster needs
 
 set -eu
 
-# The SAME modules the build used; it must also give a python3 with numpy,
-# netCDF4 and matplotlib.
-source ${MICROHH_ENV:-$HOME/microhh_env.sh}
+# Optional: the modules of the build. Python needs numpy, netCDF4 and matplotlib.
+if [ -n "${MICROHH_ENV:-}" ]; then source "$MICROHH_ENV"; fi
 
-# --- run in the folder this script sits in ---------------------------------
-RUN_DIR=""
-if [ -n "${SLURM_JOB_ID:-}" ] && command -v scontrol > /dev/null; then
-    CMD=$(scontrol show job "$SLURM_JOB_ID" | awk -F= '/^ *Command=/{print $2; exit}' | awk '{print $1}')
-    if [ -n "$CMD" ]; then
-        case "$CMD" in
-            /*) ;;
-            *)  CMD="${SLURM_SUBMIT_DIR:-$PWD}/$CMD" ;;
-        esac
-        RUN_DIR=$(dirname "$CMD")
-    fi
-fi
-if [ -z "$RUN_DIR" ] || [ ! -f "$RUN_DIR/andren1994.ini" ]; then
-    RUN_DIR=${SLURM_SUBMIT_DIR:-}
-fi
-if [ -z "$RUN_DIR" ] || [ ! -f "$RUN_DIR/andren1994.ini" ]; then
-    RUN_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-fi
+# Run in the folder of this script (SLURM runs a copy of it, so use the submit directory there).
+RUN_DIR=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 if [ ! -f "$RUN_DIR/andren1994.ini" ]; then
-    echo "ERROR: cannot find andren1994.ini (tried scontrol Command=, SLURM_SUBMIT_DIR, script dir)"
+    echo "ERROR: no andren1994.ini in $RUN_DIR: submit the job from the run directory"
     exit 1
 fi
 cd "$RUN_DIR"
 echo "Run directory: $RUN_DIR"
 
-export OMPI_MCA_coll_hcoll_enable=0
-
 npx=$(awk -F= '/^npx=/{print $2}' andren1994.ini)
 npy=$(awk -F= '/^npy=/{print $2}' andren1994.ini)
 NP=$((npx*npy))
-if [ $NP -gt ${SLURM_NTASKS:-$NP} ]; then
-    echo "ERROR: npx*npy = $NP in andren1994.ini, more than the ${SLURM_NTASKS} tasks of the job."
-    exit 1
+if [ -z "${MPIRUN:-}" ]; then
+    if [ -n "${SLURM_JOB_ID:-}" ]; then MPIRUN="srun -n"; else MPIRUN="mpirun -np"; fi
 fi
-echo "MPI: $npx x $npy = $NP tasks"
-SRUN="srun -n $NP"
+RUN="$MPIRUN $NP"
+echo "MPI: $npx x $npy = $NP tasks ($RUN)"
 
 BIN=${MICROHH_BIN:-@BIN@}
 [ -x "$BIN" ] || { echo "ERROR: no MicroHH binary at $BIN (set MICROHH_BIN or copy it to $RUN_DIR/microhh)"; exit 1; }
 
 if [ -e grid.0000000 ]; then
     echo "ERROR: grid.0000000 exists - this directory has been initialised already."
-    echo "       Regenerate it (andren1994_setup.py --outdir ...) for a clean start."
+    echo "       Make a new one (andren1994_setup.py --outdir ...) for a clean start."
     exit 1
 fi
 
-$SRUN "$BIN" init andren1994
+$RUN "$BIN" init andren1994
 python3 andren1994_setup.py --perturb --rundir .
-$SRUN "$BIN" run andren1994
+$RUN "$BIN" run andren1994
 
 python3 andren1994_plot.py --rundir . --outdir figs || \
     echo "plotting failed (the run itself finished)"
@@ -519,18 +505,14 @@ python3 andren1994_plot.py --rundir . --outdir figs || \
 
 def write_job(fn, a, itot, jtot, ktot, npx, npy):
     NP = npx * npy
-    # Cost estimate, measured on Atos (qos nf, 18-19 Oct 2026, paper grid):
+    # Cost estimate, measured on 128-core AMD EPYC nodes (paper grid):
     # - both surfaces cost ~85 us per cell-step per core (flat: 25 tasks,
     #   0.21 s per step; IB: 20 tasks, 44 levels, 0.29 s per step). A 70 k-cell
     #   domain on 20-25 tasks is dominated by MPI and output, not by the IB;
     # - dt (CFL-limited, cflmax 1.2) is 11.3 s on the flat surface with
     #   utrans = 7.5, but 7.1 s with the IB, which needs utrans = 0: the CFL
     #   then sees the full ~10 m/s instead of u - 7.5 m/s.
-    # So the IB run takes ~2.3x the flat run: ~70 min for 1e5 s. (The IB job
-    # of 19 Oct was not slow: it reached 13 800 s in 10 min, then hung for
-    # 21 min after a Lustre corruption of one cross-section file and hit the
-    # 30-min limit; the flat job needed 29.5 of its 30 min.)
-    ib = getattr(a, 'surface', 'flat') == 'ib'
+    # So the IB run takes ~2.3x the flat run: ~70 min for 1e5 s on 20 cores.
     dt_est = a.dt_est if a.dt_est is not None else (11.3 if a.utrans else 7.1)
     dt = dt_est * (PAPER['xsize'] / itot / 100.)       # dt scales with dx (dy, dz alike)
     nsteps = a.endtime / dt
@@ -540,21 +522,16 @@ def write_job(fn, a, itot, jtot, ktot, npx, npy):
     hh, mm = wall_req // 3600, (wall_req % 3600) // 60
     est = (f'{itot*jtot*ktot/1e6:.3g} M cells, dt ~{dt:.1f} s, {nsteps:.0f} steps, '
            f'{core_s/3600:.1f} core-h, ~{wall_s/60:.0f} min on {NP} tasks')
-    qos = 'nf' if NP <= 64 else 'np'
     rep = {'@RES@': a.res, '@ITOT@': str(itot), '@JTOT@': str(jtot), '@KTOT@': str(ktot),
            '@NPX@': str(npx), '@NPY@': str(npy), '@NP@': str(NP), '@ENDTIME@': f'{a.endtime:g}',
-           '@BIN@': a.microhh_bin, '@QOS@': qos, '@WALL@': f'{hh:02d}:{mm:02d}:00', '@EST@': est}
+           '@BIN@': a.microhh_bin, '@WALL@': f'{hh:02d}:{mm:02d}:00', '@EST@': est}
     txt = JOB
     for k, v in rep.items():
         txt = txt.replace(k, v)
-    if qos == 'np':
-        # np bills the whole node anyway: ask for all 128 tasks; srun uses npx*npy of them.
-        txt = txt.replace('#SBATCH --ntasks=%d\n' % NP,
-                          '#SBATCH --nodes=1\n#SBATCH --ntasks=128\n#SBATCH --ntasks-per-node=128\n')
     with open(fn, 'w') as f:
         f.write(txt)
     os.chmod(fn, 0o755)
-    return est, qos
+    return est
 
 
 def divergence(u, v, w, dx, dy, dz):
@@ -667,7 +644,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--outdir', default='run_andren1994', help='run directory to create')
     ap.add_argument('--res', choices=RES.keys(), default='paper', help='grid (domain is always the paper\'s)')
-    ap.add_argument('--npx', type=int, default=None, help='MPI tasks in x (default: auto for one Atos node)')
+    ap.add_argument('--npx', type=int, default=None, help='MPI tasks in x (default: auto, at most --maxtasks)')
     ap.add_argument('--npy', type=int, default=None, help='MPI tasks in y (default: auto)')
     ap.add_argument('--maxtasks', type=int, default=128, help='upper limit for the auto decomposition')
     ap.add_argument('--endtime', type=float, default=PAPER['endtime'], help='end time in s (paper: 10/f = 1e5)')
@@ -680,17 +657,17 @@ def main():
                          '0 for --surface ib, which requires 0)')
     ap.add_argument('--surface', choices=('flat', 'ib'), default='flat',
                     help='flat: MicroHH\'s own surface model (default, the earlier runs); ib: a flat '
-                         'immersed-boundary surface with the S5 [IB] switches')
+                         'immersed-boundary surface with the recommended IB settings')
     ap.add_argument('--advec', choices=('2', '2i5'), default=None,
-                    help='[advec] swadvec (default: 2 for flat, 2i5 for ib, as the production runs)')
+                    help='[advec] swadvec (default: 2 for flat, 2i5 for ib, as the recommended IB set-up)')
     ap.add_argument('--ib-solid-levels', type=int, default=IB_SOLID_LEVELS,
                     help='--surface ib: solid levels under the surface')
     ap.add_argument('--ib-offset', type=float, default=IB_OFFSET,
                     help='--surface ib: surface height above the half level, in dz (0 = on a face, '
                          'gives NaN IDW weights)')
     ap.add_argument('--momentum', choices=('staircase', 'vr'), default='staircase',
-                    help='IB momentum method (--surface ib): staircase (default; case026, the staircase '
-                         'tree) or vr (velocity reconstruction, patches 59-60, the vr tree)')
+                    help='IB momentum method (--surface ib): staircase (default; the MOST wall stress as '
+                         'a source term) or vr (velocity reconstruction; needs a MicroHH build with it)')
     ap.add_argument('--ib-set', action='append', metavar='KEY=VALUE',
                     help='--surface ib: override or add an [IB] key (repeatable), e.g. sw_wall_sample=false')
     ap.add_argument('--cflmax', type=float, default=1.2)
@@ -698,7 +675,7 @@ def main():
     ap.add_argument('--dt-est', type=float, default=None,
                     help='expected mean dt (s) on the paper grid, only for the wall-time estimate '
                          '(default: measured 11.3 s for the flat surface with utrans 7.5, 7.1 s with utrans 0 / the IB; scaled with dx for other grids)')
-    ap.add_argument('--microhh-bin', default='./microhh', help='default binary path written into job_atos.sh')
+    ap.add_argument('--microhh-bin', default='./microhh', help='default binary path written into job.sh')
     ap.add_argument('--perturb', action='store_true', help='mode 2: add the initial perturbations in --rundir')
     ap.add_argument('--rundir', default='.', help='run directory for --perturb')
     a = ap.parse_args()
@@ -721,12 +698,12 @@ def main():
                             'sw_wall_kinematic', 'sw_momentum_air_only', 'sw_impermeable',
                             'sw_wall_slantwise', 'sw_wall_momentum_relay') if k in sw]
         if gone and a.momentum == 'vr':
-            sys.exit(f'--ib-set {", ".join(gone)}: removed by patch 59, not in the vr tree '
-                     f'(MicroHH ignores them); use --momentum staircase')
+            sys.exit(f'--ib-set {", ".join(gone)}: keys of the staircase momentum method, not used '
+                     f'with velocity reconstruction (MicroHH ignores them); use --momentum staircase')
         vr_keys = [k for k in sw if k.startswith(('sw_momentum_reconstruct', 'reconstruct_'))]
         if vr_keys and a.momentum == 'staircase':
-            sys.exit(f'{", ".join(vr_keys)}: velocity-reconstruction keys, not in the staircase '
-                     f'tree; use --momentum vr')
+            sys.exit(f'{", ".join(vr_keys)}: velocity-reconstruction keys, not used by the staircase '
+                     f'momentum method; use --momentum vr')
         if not 0. <= a.ib_offset < 1.:
             sys.exit('--ib-offset must be in [0, 1)')
         if a.ib_offset == 0.:
@@ -744,7 +721,7 @@ def main():
         sys.exit(f'npx={npx}, npy={npy} is not valid for {itot}x{jtot}x{ktot}: MicroHH needs itot and '
                  f'jtot divisible by npx and npy, and ktot by npx')
     if npx * npy > 128:
-        print(f'WARNING: {npx*npy} tasks is more than one Atos node (128 cores)')
+        print(f'NOTE: {npx*npy} MPI tasks: more than one node of 128 cores on most clusters')
 
     os.makedirs(a.outdir, exist_ok=True)
     if os.path.exists(os.path.join(a.outdir, 'grid.0000000')):
@@ -764,7 +741,7 @@ def main():
                   ib_set=a.ib_set or [], momentum=a.momentum if a.surface == 'ib' else None)
     with open(os.path.join(a.outdir, 'case_parameters.json'), 'w') as f:
         json.dump(params, f, indent=1)
-    est, qos = write_job(os.path.join(a.outdir, 'job_atos.sh'), a, itot, jtot, ktot, npx, npy)
+    est = write_job(os.path.join(a.outdir, 'job.sh'), a, itot, jtot, ktot, npx, npy)
     # cross_to_nc.sh + cross_to_nc.py + microhh_tools.py (time means over 1 h)
     install_cross_to_nc(a.outdir, CASE, window=3600.)
     for fn in ('andren1994_setup.py', 'andren1994_plot.py', 'reference_andren1994.json'):
@@ -773,7 +750,7 @@ def main():
             shutil.copy(src, a.outdir)
 
     print(f'{a.outdir}: res={a.res} {itot}x{jtot}x{ktot} (dx={params["dx"]:g}, dy={params["dy"]:g}, '
-          f'dz={params["dz"]:g} m), MPI {npx}x{npy}={npx*npy} (qos {qos}), endtime {a.endtime:g} s, '
+          f'dz={params["dz"]:g} m), MPI {npx}x{npy}={npx*npy}, endtime {a.endtime:g} s, '
           f'surface={a.surface}, advec={a.advec}, utrans={a.utrans:g}')
     if a.surface == 'ib':
         print(f'IB surface at z = {g["z_surface"]:g} m ({g["n_solid"]} solid levels + {g["ib_offset"]:g} dz), '

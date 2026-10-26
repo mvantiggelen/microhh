@@ -1,36 +1,63 @@
 # andren1994: neutral Ekman layer (Andrén et al. 1994)
 
-The LES intercomparison of a neutral, shear-driven boundary layer under a
-stress-free lid: geostrophic wind 10 m/s, f = 1e-4 s⁻¹, z0 = 0.1 m, 40 × 40 × 40
-grid, run to 10/f with the 7/f–10/f average. It tests the smag2/Mason set-up,
-the MOST surface, the Coriolis forcing and the scalar flux at a coarse grid.
-With `--surface ib` the surface is a flat IB DEM with the S5 production [IB]
-block, so the IB wall model can be checked against MicroHH's own surface.
+The classic LES intercomparison of a neutral boundary layer driven by a
+geostrophic wind of 10 m/s, with f = 1e-4 s⁻¹, z0 = 0.1 m and a stress-free
+lid. The grid is 40 × 40 × 40 and the run lasts 10/f, with the statistics
+averaged over 7/f–10/f. The case tests the Smagorinsky/Mason closure, the
+surface model, the Coriolis forcing and a passive scalar flux.
+
+With `--surface ib` the same case is run over a **flat immersed boundary
+(IB)**: the domain floor is buried under a flat DEM, and the surface is
+handled by the IB wall model instead of MicroHH's own surface model. Comparing
+the two runs shows whether the IB wall model reproduces the normal surface.
 
 | file | what |
 |---|---|
-| `andren1994_setup.py` | writes a run directory (`.ini`, input `.nc`, DEM, `case_parameters.json`, `job_atos.sh`, copies of the scripts); `--perturb` adds the initial perturbations after `microhh init` |
+| `andren1994_setup.py` | writes a run directory (`.ini`, input `.nc`, DEM, `case_parameters.json`, `job.sh`, copies of the scripts); `--perturb` adds the initial perturbations after `microhh init` |
 | `andren1994_plot.py` | profiles and bulk numbers against the paper (PNG + table) |
 | `reference_andren1994.json` | the paper's tables and digitised profiles |
-| `cross_to_nc.py`, `write_cross_to_nc.py`, `microhh_tools.py` | cross-section conversion to NetCDF |
+| `cross_to_nc.py`, `write_cross_to_nc.py`, `microhh_tools.py` | conversion of the cross-sections to netCDF |
 
 ## Run
 
-    python3 andren1994_setup.py --res small --endtime 7200 --npx 1 --npy 1 --outdir runs/smoke
-    cd runs/smoke
-    /path/to/microhh init andren1994
+On a laptop (small grid, about a minute):
+
+    python3 andren1994_setup.py --res small --endtime 7200 --npx 1 --npy 1 --outdir runs/small
+    cd runs/small
+    cp /path/to/microhh .
+    ./microhh init andren1994
     python3 andren1994_setup.py --perturb --rundir .
-    /path/to/microhh run andren1994
+    ./microhh run andren1994
 
-Paper grid on Atos: `python3 andren1994_setup.py --res paper --outdir $SCRATCH/andren1994/paper`,
-copy the binary into it and `sbatch job_atos.sh` (it does init, perturb, run and the plots).
+The generated `job.sh` does the same steps (init, perturbations, run, plots).
+It runs on a laptop with `bash job.sh` and on a SLURM cluster such as
+Snellius with `sbatch job.sh` (check its `#SBATCH` lines first):
 
-Options: `--res paper|small|fine`, `--surface flat|ib`, `--momentum staircase|vr`
-(IB momentum, default staircase = case026, see `../README.md`), `--ib-set key=value`.
+    python3 andren1994_setup.py --res paper --outdir runs/paper
+    cp /path/to/microhh runs/paper/ && cd runs/paper && sbatch job.sh
+
+Options:
+- `--res paper|small|fine`: the grid (the domain is always the paper's);
+- `--surface flat|ib`: MicroHH's surface model, or a flat immersed boundary;
+- `--momentum staircase|vr` (with `--surface ib`): how the IB applies the
+  surface stress, see `../README.md`;
+- `--ib-set key=value`: change any `[IB]` setting, e.g. `--ib-set sw_wall_sample=false`;
+- `--npx`, `--npy`: the MPI decomposition (default: chosen automatically).
+
+## The flat-IB variant
+
+With `--surface ib` the floor is buried 4 levels deep under a flat DEM, so
+that the air column above the surface still has the paper's 1500 m. The `[IB]`
+block uses the recommended IB settings, with the paper's z0 and scalar flux.
+The IB needs `[grid] utrans = 0` (it works in the model frame), so the flat
+twin to compare with is
+
+    python3 andren1994_setup.py --advec 2i5 --utrans 0 --outdir runs/flat_2i5
 
 ## Process the output
 
-    python3 andren1994_plot.py --rundir runs/smoke --outdir runs/smoke/figs
+    python3 andren1994_plot.py --rundir runs/small --outdir runs/small/figs
+    python3 andren1994_plot.py --rundir runs/flat_2i5 --compare runs/ib --labels "flat" "flat IB" --outdir figs
 
 u*/U_G, the surface stress angle and the profiles of wind, stress, variances
 and the scalar against the paper (u*/U_G 0.040–0.045, angle 12.5–17°).
