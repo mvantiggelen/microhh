@@ -41,12 +41,18 @@ SOURCES = ('cross_to_nc.py', 'microhh_tools.py', 'write_cross_to_nc.py')
 
 
 def _find(name):
-    for d in (HERE, os.path.join(HERE, '..', '..'), os.path.join(HERE, '..')):
+    # microhh_tools.py is taken from the python folder of the MicroHH tree
+    # (cases/<case>/../../python), or from $MICROHH_PYTHON.
+    dirs = [HERE, os.path.join(HERE, '..', '..', 'python'),
+            os.path.join(HERE, '..', '..'), os.path.join(HERE, '..')]
+    if os.environ.get('MICROHH_PYTHON'):
+        dirs.insert(0, os.environ['MICROHH_PYTHON'])
+    for d in dirs:
         p = os.path.join(d, name)
         if os.path.isfile(p):
             return os.path.abspath(p)
-    raise SystemExit(f'write_cross_to_nc: {name} not found next to {__file__} '
-                     f'or one or two folders up')
+    raise SystemExit(f'write_cross_to_nc: {name} not found next to {__file__}, '
+                     f'in microhh/python or in $MICROHH_PYTHON')
 
 
 def _crosslist(ini_path):

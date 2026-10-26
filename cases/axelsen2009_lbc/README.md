@@ -28,7 +28,7 @@ The same flow in MicroHH's own rotated slope frame is in
 | `observations_P1.json`, `pasterze_balloon_1994.json` | digitised paper profiles and PASTEX soundings |
 | `digitize_observations.py`, `pasterze_balloon.py` | how those two files were made (need the source PDFs and data) |
 | `reference_axelsen2009.json` | the paper's Table 1 and digitised profiles |
-| `cross_to_nc.py`, `write_cross_to_nc.py`, `microhh_tools.py` | conversion of the cross-sections to netCDF |
+| `cross_to_nc.py`, `write_cross_to_nc.py` | conversion of the cross-sections to netCDF (uses `python/microhh_tools.py` of this tree, or `$MICROHH_PYTHON`) |
 
 ## Run
 

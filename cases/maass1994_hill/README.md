@@ -15,7 +15,7 @@ measurements of Hudson et al. (1996). Units: H = 1 m, U_m = 1 m/s.
 | `reference_maass1994.json`, `reference_hudson1996.json` | the DNS and LDV data |
 | `build_hudson_reference.py`, `hudson_case076_raw.json` | how `reference_hudson1996.json` was made (ERCOFTAC case 076) |
 | `digitise/*.py` | how the paper figures were digitised |
-| `cross_to_nc.py`, `write_cross_to_nc.py`, `microhh_tools.py` | conversion of the cross-sections to netCDF |
+| `cross_to_nc.py`, `write_cross_to_nc.py` | conversion of the cross-sections to netCDF (uses `python/microhh_tools.py` of this tree, or `$MICROHH_PYTHON`) |
 
 `--variant` sets how the IB applies the wall stress to the velocity:
 `staircase` (default, works with the develop_openbc branch), or `vr`, `vrlin`

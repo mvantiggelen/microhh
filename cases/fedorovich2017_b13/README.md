@@ -15,7 +15,7 @@ the flat twin, case B11.
 | `fedorovich2017_b13.ini.base` | the .ini template (IB with the staircase momentum method) |
 | `fedorovich2017_b13_analysis.py` | jet speed and height, hodographs and profiles against the paper |
 | `reference_b13.json` | the paper's numbers |
-| `cross_to_nc.py`, `write_cross_to_nc.py`, `microhh_tools.py` | conversion of the cross-sections to netCDF |
+| `cross_to_nc.py`, `write_cross_to_nc.py` | conversion of the cross-sections to netCDF (uses `python/microhh_tools.py` of this tree, or `$MICROHH_PYTHON`) |
 
 Needs MicroHH from the develop_openbc branch. The `[IB]` block uses the
 staircase momentum method only (`sw_momentum_flux`, `sw_strain_most`,
@@ -39,7 +39,7 @@ The full case, with MPI (e.g. 16 × 8 = 128 tasks):
 On a SLURM cluster such as Snellius, put the last two commands in a job
 script with `#SBATCH --ntasks=128` and `srun` instead of `mpirun -np 128`.
 `microhh_tools.py` is taken from `$MICROHH_ROOT/python` if `MICROHH_ROOT` is
-set, else from this folder.
+set, else from the `python` folder of this MicroHH tree.
 
 Options: `--wall-slope`, `--kinematic`, `--sgs smag2|aniso|tke2`, `--advec 2i5|2i62`,
 `--lbc tfperiodic|nudge --precursor <stats.nc>`, `--z0m/--z0h`.

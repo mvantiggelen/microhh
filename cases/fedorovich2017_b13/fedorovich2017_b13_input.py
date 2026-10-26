@@ -61,11 +61,11 @@ CASE = 'fedorovich2017_b13'
 
 
 def find_microhh_tools():
-    """microhh_tools.py from $MICROHH_ROOT/python, or the copy next to this script."""
+    """microhh_tools.py from $MICROHH_ROOT/python or the python folder of this tree."""
     candidates = []
     if 'MICROHH_ROOT' in os.environ:
         candidates.append(os.path.join(os.environ['MICROHH_ROOT'], 'python'))
-    candidates += [os.path.join(HERE, '..', '..'), HERE]
+    candidates += [os.path.join(HERE, '..', '..', 'python'), HERE]
     for c in candidates:
         if os.path.exists(os.path.join(c, 'microhh_tools.py')):
             sys.path.insert(0, c)

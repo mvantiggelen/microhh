@@ -16,7 +16,7 @@ the two runs shows whether the IB wall model reproduces the normal surface.
 | `andren1994_setup.py` | writes a run directory (`.ini`, input `.nc`, DEM, `case_parameters.json`, `job.sh`, copies of the scripts); `--perturb` adds the initial perturbations after `microhh init` |
 | `andren1994_plot.py` | profiles and bulk numbers against the paper (PNG + table) |
 | `reference_andren1994.json` | the paper's tables and digitised profiles |
-| `cross_to_nc.py`, `write_cross_to_nc.py`, `microhh_tools.py` | conversion of the cross-sections to netCDF |
+| `cross_to_nc.py`, `write_cross_to_nc.py` | conversion of the cross-sections to netCDF (uses `python/microhh_tools.py` of this tree, or `$MICROHH_PYTHON`) |
 
 MicroHH's original set-up of this case is in `../andren1994`; it runs on
 MicroHH's own surface only. This folder is separate from it:
