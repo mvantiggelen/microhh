@@ -439,7 +439,7 @@ def main():
     if a.dump_every > 0.:
         dump_sec = ('[dump]\n# 3-D fields for vortex_criteria.py (Q, lambda2, lambda_ci), written\n'
                     '# at every sampletime.\n'
-                    f'swdump=1\nsampletime={a.dump_every:g}\nsw_dump_every_sample=true\n'
+                    f'swdump=1\nsampletime={a.dump_every:g}\n'
                     'dumplist=u,v,w,thl\n')
     else:
         dump_sec = '[dump]\nswdump=0\n'

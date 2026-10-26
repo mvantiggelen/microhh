@@ -339,7 +339,6 @@ crosslist=u,w,p,s,taux_form_ib,tauy_form_ib,taux_skin_ib,tauy_skin_ib,ustar_ib
 # 3-D fields for the phase averages (Figs. 2, 3, 6, 7 of the paper)
 swdump=1
 sampletime={p['dump_dt']:g}
-sw_dump_every_sample=true
 dumplist=u,v,w,p
 """
     with open(fn, 'w') as f:
