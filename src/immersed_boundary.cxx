@@ -1715,7 +1715,7 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         sw_dem_halo_replicate = inputin.get_item<bool>(
                 "IB", "sw_dem_halo_replicate", "", false);
 
-        // Monin-Obukhov wall model. See IB_WALL_MODEL.md.
+        // Monin-Obukhov wall model on the IB faces: 0 (off), neutral or most.
         const std::string wm = inputin.get_item<std::string>(
                 "IB", "sw_wall_model", "", "0");
         if (wm == "0" || wm == "false")

@@ -19,7 +19,7 @@
 * `sullivan2011`: Dry convective boundary layer following Sullivan and Patton (2011).
 
 ## Immersed boundary terrain and open boundaries
-These cases test the immersed boundary (IB) terrain and the open lateral boundaries of the `develop_openbc` branch. Each folder has a README with the set-up, how to run it on a laptop or a SLURM cluster, and how to compare the results with the reference.
+These cases test the immersed boundary (IB) terrain and the open lateral boundaries of the `develop_openbc` branch. Each folder has a README with the set-up, how to run it on a laptop or a SLURM cluster, and how to compare the results with the reference. The input keys are listed in `doc/immersed_boundary_openbc.md`.
 * `andren1994_ib`: The neutral boundary layer of Andren et al. (1994) over a flat immersed boundary, against the standard surface.
 * `axelsen2009_lbc`: Katabatic case P1 of Axelsen and van Dop (2009) on a plateau-slope-valley IB terrain with open boundaries.
 * `axelsen2009_rotated`: Katabatic case P1 of Axelsen and van Dop (2009) in the rotated slope frame: MicroHH's surface model against a flat IB.
