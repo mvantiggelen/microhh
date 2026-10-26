@@ -5,7 +5,7 @@
 * `taylorgreen`: Convergence test for spatial discretizations in Taylor-Green vortex.
 
 ## Atmospheric LES
-* `andren1994`: LES of neutral boundary layer (Andren et al. 1994). Also with a flat immersed boundary (see `andren1994/README.md`).
+* `andren1994`: LES of neutral boundary layer (Andren et al. 1994).
 * `arm`: Shallow cumulus over land (Brown et al., 2002).
 * `bomex`: BOMEX trade wind cumulus case (Siebesma et al., 2003).
 * `drycblles`: Dry convective boundary layer growing against linear stratification.
@@ -20,7 +20,7 @@
 
 ## Immersed boundary terrain and open boundaries
 These cases test the immersed boundary (IB) terrain and the open lateral boundaries of the `develop_openbc` branch. Each folder has a README with the set-up, how to run it on a laptop or a SLURM cluster, and how to compare the results with the reference.
-* `axelsen2009`: Katabatic and anabatic slope flows on an IB slope with terrain-following periodic boundaries (Axelsen and van Dop, 2009).
+* `andren1994_ib`: The neutral boundary layer of Andren et al. (1994) over a flat immersed boundary, against the standard surface.
 * `axelsen2009_lbc`: Katabatic case P1 of Axelsen and van Dop (2009) on a plateau-slope-valley IB terrain with open boundaries.
 * `axelsen2009_rotated`: Katabatic case P1 of Axelsen and van Dop (2009) in the rotated slope frame: MicroHH's surface model against a flat IB.
 * `fedorovich2017_b13`: Nocturnal low-level jet over a gentle IB slope (Fedorovich et al., 2017, case B13).
