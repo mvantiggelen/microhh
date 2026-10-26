@@ -18,6 +18,12 @@ the two runs shows whether the IB wall model reproduces the normal surface.
 | `reference_andren1994.json` | the paper's tables and digitised profiles |
 | `cross_to_nc.py`, `write_cross_to_nc.py`, `microhh_tools.py` | conversion of the cross-sections to netCDF |
 
+The folder also holds MicroHH's original set-up of this case
+(`andren1994.ini`, `andren1994_input.py`, `andren1994_stats.py`,
+`andren1994_tableA1`, `readmicrohh.py`), which runs on MicroHH's own surface
+only. `andren1994_setup.py` writes a complete run directory of its own and
+does not use those files.
+
 ## Run
 
 On a laptop (small grid, about a minute):
@@ -40,7 +46,7 @@ Options:
 - `--res paper|small|fine`: the grid (the domain is always the paper's);
 - `--surface flat|ib`: MicroHH's surface model, or a flat immersed boundary;
 - `--momentum staircase|vr` (with `--surface ib`): how the IB applies the
-  surface stress, see `../README.md`;
+  surface stress, see below;
 - `--ib-set key=value`: change any `[IB]` setting, e.g. `--ib-set sw_wall_sample=false`;
 - `--npx`, `--npy`: the MPI decomposition (default: chosen automatically).
 
@@ -53,6 +59,18 @@ The IB needs `[grid] utrans = 0` (it works in the model frame), so the flat
 twin to compare with is
 
     python3 andren1994_setup.py --advec 2i5 --utrans 0 --outdir runs/flat_2i5
+
+## How the IB applies the surface stress (`--momentum`)
+
+- `staircase` (default): the IB terrain is a staircase of grid cells. The
+  surface stress of the Monin–Obukhov (MOST) wall model is applied as a
+  momentum source in the air cells next to the terrain, the eddy viscosity
+  there is rescaled to match it, w on the floor faces follows the sub-grid
+  slope, and momentum is exchanged with the terrain only through MOST and
+  pressure. This works with the develop_openbc branch.
+- `vr`: velocity reconstruction. The velocity in the air cells next to the
+  terrain is set from the MOST profile along the surface normal. This needs a
+  MicroHH build with velocity reconstruction, which is not in develop_openbc.
 
 ## Process the output
 

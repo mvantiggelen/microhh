@@ -19,7 +19,8 @@ the flat twin, case B11.
 
 Needs MicroHH from the develop_openbc branch. The `[IB]` block uses the
 staircase momentum method only (`sw_momentum_flux`, `sw_strain_most`,
-optionally `--kinematic`); see `../README.md`.
+optionally `--kinematic`): the surface stress of the MOST wall model is
+applied as a momentum source in the air cells next to the terrain.
 
 ## Run
 

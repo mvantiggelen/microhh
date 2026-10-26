@@ -49,7 +49,7 @@ Both grids use 128 MPI tasks by default (coarse 8 × 16, fine 4 × 32). On a lap
 choose fewer, e.g. `--npx 2 --npy 4`; the coarse grid then takes a few hours.
 
 Other options: `--res fine`, `--bc flux|temp`, `--melt physical|uniform`,
-`--sgs tke2|smag2`, `--momentum staircase|vr` (see `../README.md`),
+`--sgs tke2|smag2`, `--momentum staircase|vr` (see below),
 `--slope-length`, `--no-periodic-y`, `--output minimal|full`.
 
 **Output.** `--output minimal` (default) writes only what the analysis
@@ -61,6 +61,18 @@ writes yz planes, towers and time-averaged planes, which
 `axelsen2009_lbc_turbulence.py`, `axelsen2009_lbc_drag_budget.py` and
 `vortex_criteria.py` (with `--dump-every`) need. On a parallel file system
 many small files can make the run spend most of its time writing.
+
+## How the IB applies the surface stress (`--momentum`)
+
+- `staircase` (default): the IB terrain is a staircase of grid cells. The
+  surface stress of the Monin–Obukhov (MOST) wall model is applied as a
+  momentum source in the air cells next to the terrain, the eddy viscosity
+  there is rescaled to match it, w on the floor faces follows the sub-grid
+  slope, and momentum is exchanged with the terrain only through MOST and
+  pressure. This works with the develop_openbc branch.
+- `vr`: velocity reconstruction. The velocity in the air cells next to the
+  terrain is set from the MOST profile along the surface normal. This needs a
+  MicroHH build with velocity reconstruction, which is not in develop_openbc.
 
 ## Process the output
 

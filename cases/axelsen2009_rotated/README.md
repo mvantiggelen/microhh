@@ -10,7 +10,7 @@ and noise:
 - `native/`: the domain floor is the surface (MicroHH's surface model, MOST with z0m, z0h);
 - `ib/`: the floor is buried under a flat IB DEM `--k-ib` levels up, with the
   recommended IB settings (as in `../axelsen2009_lbc`) and the IB momentum
-  method of `--momentum` (see `../README.md`).
+  method of `--momentum` (see below).
 
 Level k_ib + k of `ib/` is level k of `native/`, so the two runs can be
 compared level by level. `ib/` needs MicroHH from the develop_openbc branch.
@@ -34,6 +34,18 @@ The default (3600 s on 2 MPI tasks, `--npx 1 --npy 2`) is small enough for a lap
 Switches of `ib/` (true/false): `--wall-slope`, `--advec-wall`, `--wall-sample`;
 for staircase: `--strain-most`, `--wall-kinematic`, `--momentum-air-only`;
 for vr: `--momentum-reconstruct`, `--reconstruct-stress`, `--reconstruct-dz`.
+
+## How the IB applies the surface stress (`--momentum`)
+
+- `staircase` (default): the IB terrain is a staircase of grid cells. The
+  surface stress of the Monin–Obukhov (MOST) wall model is applied as a
+  momentum source in the air cells next to the terrain, the eddy viscosity
+  there is rescaled to match it, w on the floor faces follows the sub-grid
+  slope, and momentum is exchanged with the terrain only through MOST and
+  pressure. This works with the develop_openbc branch.
+- `vr`: velocity reconstruction. The velocity in the air cells next to the
+  terrain is set from the MOST profile along the surface normal. This needs a
+  MicroHH build with velocity reconstruction, which is not in develop_openbc.
 
 ## Process the output
 

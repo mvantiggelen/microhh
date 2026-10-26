@@ -156,7 +156,7 @@ Options:
   longer than the sponge;
 - **radiation:** `--radiation off|lw|lwsw` (needs `--humidity racmo`), `--albedo`;
 - **physics:** `--surface`, `--humidity`, `--z0h-model`, `--z0h`, `--basestate`,
-  `--rnd-depth` (see the table), `--momentum staircase|vr` (see `../README.md`),
+  `--rnd-depth` (see the table), `--momentum staircase|vr` (see below),
   `--outflow jet|rest`, `--n-tau`, `--endtime`;
 - **RACMO:** `--racmo-time` (s after 03 UTC, default 43200 = 15 UTC);
   `--jet-speed`, `--jet-height`, `--dtheta0`, `--theta-depth` (the fit, used
@@ -168,6 +168,18 @@ Examples:
     --dx 50 --dz 5                               # double resolution, both runs (same sizes in m)
     --ly 6400 --zsize 2080                       # wider and deeper IB domain
     --radiation lwsw --humidity racmo            # RRTMGP in the IB run (stage 2 is enough)
+
+## How the IB applies the surface stress (`--momentum`)
+
+- `staircase` (default): the IB terrain is a staircase of grid cells. The
+  surface stress of the Monin–Obukhov (MOST) wall model is applied as a
+  momentum source in the air cells next to the terrain, the eddy viscosity
+  there is rescaled to match it, w on the floor faces follows the sub-grid
+  slope, and momentum is exchanged with the terrain only through MOST and
+  pressure. This works with the develop_openbc branch.
+- `vr`: velocity reconstruction. The velocity in the air cells next to the
+  terrain is set from the MOST profile along the surface normal. This needs a
+  MicroHH build with velocity reconstruction, which is not in develop_openbc.
 
 ## Process the output
 
