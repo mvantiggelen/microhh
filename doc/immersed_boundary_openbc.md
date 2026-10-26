@@ -80,7 +80,7 @@ sw_flux_accum=true
 | Section | Key | Default | Recommended | What it does |
 |---|---|---|---|---|
 | `[IB]` | `sw_z0m_map` | false | (true with a land-cover map) | Read a per-column z0m map (z0m.0000000) instead of the constant z0m. |
-| `[IB]` | `z0h_model` | fixed | fixed or yang2008 | z0h model on ice: fixed (z0h), ratio (z0m/z0h_ratio) or yang2008 (Yang et al. 2008). |
+| `[IB]` | `z0h_model` | fixed | fixed or yang2008 | z0h model on ice: fixed (z0h), ratio (z0m/z0h_ratio), yang2008 (Yang et al. 2008) or andreas1987 (Andreas 1987); vantiggelen2023 is reserved and stops the run. |
 | `[IB]` | `z0h_model_land` | z0h_model | - | The same for the non-glaciated (land) columns. |
 | `[IB]` | `z0h_ratio` | 10 | 10 | z0m/z0h for z0h_model=ratio. |
 | `[IB]` | `z0_nu` | 1.5e-5 | 1.5e-5 | Kinematic viscosity in the roughness Reynolds number [m2 s-1]. |
@@ -180,6 +180,7 @@ sw_flux_accum=true
 
 ## References
 
+* Andreas, E. L. (1987). A theory for the scalar roughness and the scalar transfer coefficients over snow and sea ice. *Boundary-Layer Meteorol.*, 38, 159-184. https://doi.org/10.1007/BF00121562
 * Andren, A., Brown, A. R., Graf, J., Mason, P. J., Moeng, C.-H., Nieuwstadt, F. T. M. and Schumann, U. (1994). Large-eddy simulation of a neutrally stratified boundary layer: a comparison of four computer codes. *Q. J. R. Meteorol. Soc.*, 120, 1457-1484. https://doi.org/10.1002/qj.49712052003
 * Axelsen, S. L. and van Dop, H. (2009). Large-eddy simulation of katabatic winds. Part 1: Comparison with observations. *Acta Geophysica*, 57, 803-836. https://doi.org/10.2478/s11600-009-0041-6
 * Businger, J. A., Wyngaard, J. C., Izumi, Y. and Bradley, E. F. (1971). Flux-profile relationships in the atmospheric surface layer. *J. Atmos. Sci.*, 28, 181-189. https://doi.org/10.1175/1520-0469(1971)028<0181:FPRITA>2.0.CO;2
