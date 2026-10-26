@@ -7,9 +7,9 @@ of a regional LES over a large ice sheet).
 
 Why not periodic
 ----------------
-axelsen2009/ reproduces the paper's infinite slope with terrain-following
-periodic lateral boundaries. P1 stayed unstable there (blow-up at
-t = 3370 s). This case drops the infinite-slope idea: the slope
+The paper's infinite slope can be imitated on a gravity-aligned grid with
+terrain-following periodic lateral boundaries, but P1 was unstable that way
+(blow-up at t = 3370 s). This case drops the infinite-slope idea: the slope
 has a top and a foot, and the domain edges sit where the true state is
 known, so that MicroHH's open BC (a Dirichlet value plus a relaxation zone,
 Davies 1976) can be exact.
@@ -69,7 +69,7 @@ T_MELT = 273.15
 SGSTKE_MIN = 1e-7          # MicroHH Constants::sgstke_min [m2/s2]
 NGC = 3                    # gd.igc = gd.jgc for swadvec=2i5
 
-# Axelsen and van Dop (2009) Table 1, case P1 (as axelsen2009/case_parameters.json).
+# Axelsen and van Dop (2009) Table 1, case P1 (reference_axelsen2009.json).
 P1 = dict(alpha_deg=5.0, Fs=-0.0012, N=0.0121, z0=0.0044, theta_a0_K=284.65,
           tau_osc_table_s=6600.0)
 
@@ -624,7 +624,7 @@ xz={','.join(f'{(j + 0.5) * dx:g}' for j in j_xz)}
                 xz_j=j_xz, yz_i=i_yz, npx=npx, npy=npy, momentum=a.momentum, output=a.output)
     json.dump(pars, open(out('case_parameters.json'), 'w'), indent=1)
 
-    # The cross-section converter of axelsen2009/, if it is next door.
+    # The cross-section converter (write_cross_to_nc.py in this folder).
     for d in (HERE, os.path.join(HERE, '..', 'axelsen2009')):
         if os.path.exists(os.path.join(d, 'write_cross_to_nc.py')):
             sys.path.insert(0, d)

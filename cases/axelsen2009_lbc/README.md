@@ -27,9 +27,8 @@ The same flow in MicroHH's own rotated slope frame is in
 | `axelsen2009_lbc_drag_budget.py` | form and skin drag along the slope |
 | `observations_P1.json`, `pasterze_balloon_1994.json` | digitised paper profiles and PASTEX soundings |
 | `digitize_observations.py`, `pasterze_balloon.py` | how those two files were made (need the source PDFs and data) |
-
-The cross-section converter and `reference_axelsen2009.json` are taken from
-`../axelsen2009/`, so keep the two folders side by side.
+| `reference_axelsen2009.json` | the paper's Table 1 and digitised profiles |
+| `cross_to_nc.py`, `write_cross_to_nc.py`, `microhh_tools.py` | conversion of the cross-sections to netCDF |
 
 ## Run
 
@@ -79,7 +78,7 @@ many small files can make the run spend most of its time writing.
     python3 axelsen2009_lbc_check.py --rundir runs/P1_lbc
     python3 axelsen2009_lbc_analysis.py --rundir runs/P1_lbc --tavg 3600
     python3 axelsen2009_lbc_compare.py --rundir runs/P1_lbc runs/P1_lbc_fine --label "dz 10 m" "dz 1 m"
-    python3 ../axelsen2009/write_cross_to_nc.py --rundir runs/P1_lbc --case axelsen2009_lbc --window 600
+    python3 write_cross_to_nc.py --rundir runs/P1_lbc --case axelsen2009_lbc --window 600
 
 ## References
 
