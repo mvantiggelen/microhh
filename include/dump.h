@@ -60,7 +60,6 @@ class Dump
 
         // Hack for EUREC4A MIP.
         bool swdump_sub;
-        bool sw_dump_every_sample;         // [dump] sw_dump_every_sample (apply_dump_every_sample.py)
         std::vector<int> mpicoordx;
         std::vector<int> mpicoordy;
 };
