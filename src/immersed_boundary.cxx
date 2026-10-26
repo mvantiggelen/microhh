@@ -1381,9 +1381,9 @@ namespace
     }
     template<typename TF>
     void calc_ghost_cells(
-            Ghost_cells<TF>& ghost, const std::vector<TF>& dem, 
+            Ghost_cells<TF>& ghost, const std::vector<TF>& dem,
             const std::vector<TF>& x, const std::vector<TF>& y, const std::vector<TF>& z,
-            Boundary_type bc, const TF dx, const TF dy, const std::vector<TF>& dz, 
+            Boundary_type bc, const TF dx, const TF dy, const std::vector<TF>& dz,
             const int n_idw,
             const int istart, const int jstart, const int kstart,
             const int iend,   const int jend,   const int kend,
@@ -1598,8 +1598,8 @@ namespace
             unsigned int* const restrict k_dem,
             const TF* const restrict dem,
             const TF* const restrict z,
-            const int istart, const int iend, 
-            const int jstart, const int jend, 
+            const int istart, const int iend,
+            const int jstart, const int jend,
             const int kstart, const int kend,
             const int jj)
     {
@@ -1627,8 +1627,8 @@ namespace
             const TF dx, const TF dy, const TF* const restrict dz,
             const TF dxi, const TF dyi, const TF* const restrict dzhi,
             const TF svisc,
-            const int istart, const int iend, 
-            const int jstart, const int jend, 
+            const int istart, const int iend,
+            const int jstart, const int jend,
             const int kstart, const int kend,
             const int jj, const int kk)
     {
@@ -4875,7 +4875,7 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
 
         }
 
-        // Create the array with vertical indices that give the first cell above the DEM. 
+        // Create the array with vertical indices that give the first cell above the DEM.
 
         if (sw_wall_model != IB_wall_type::Disabled)
         {
@@ -5715,8 +5715,8 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
 
         find_k_dem(
                 k_dem.data(), dem.data(), gd.z.data(),
-                gd.istart, gd.iend, 
-                gd.jstart, gd.jend, 
+                gd.istart, gd.iend,
+                gd.jstart, gd.jend,
                 gd.kstart, gd.kend,
                 gd.icells);
 
