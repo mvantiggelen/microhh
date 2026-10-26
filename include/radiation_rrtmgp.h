@@ -83,6 +83,9 @@ class Radiation_rrtmgp : public Radiation<TF>
         std::vector<TF>& get_surface_albedo(const std::string&)
         { throw std::runtime_error("This radiation class cannot provide a surface albedo field"); }
 
+        // Patch 63 (apply_ib_radiation.py).
+        void set_ib_surface(const std::vector<TF>*, std::function<void(std::vector<TF>&)>);
+
         void exec_all_stats(
                 Stats<TF>&, Cross<TF>&, Dump<TF>&, Column<TF>&,
                 Thermo<TF>&, Timeloop<TF>&, const unsigned long, const int);
@@ -313,6 +316,23 @@ class Radiation_rrtmgp : public Radiation<TF>
         Float* sw_flux_dn_dir_inc_g;
         Float* sw_flux_dn_dif_inc_g;
         Float* lw_flux_dn_inc_g;
+
+        // Patch 63 (apply_ib_radiation.py): columns that start at the
+        // immersed-boundary surface ([radiation] sw_ib_columns).
+        bool sw_ib_columns;
+        const std::vector<TF>* ib_dem = nullptr;
+        std::function<void(std::vector<TF>&)> ib_get_tsurf;
+        std::vector<TF> ib_tsurf;
+        bool use_ib_p = false;               // exec_longwave/shortwave take p_lay_ib/p_lev_ib
+        Array<Float,2> p_lay_ib;
+        Array<Float,2> p_lev_ib;
+        std::vector<int> ib_kcut;            // layer that holds the surface (absolute k), -1 none
+        std::vector<TF> ib_fair;             // its air fraction
+        void set_ib_columns(
+                const std::vector<int>&, const std::vector<TF>&, const std::vector<TF>&,
+                Array<Float,2>&, Array<Float,2>&, Array<Float,1>&,
+                Array<Float,2>&, Array<Float,2>&, Array<Float,2>&);
+        void correct_ib_heating(Thermo<TF>&);
 
         // Surface diffuse radiation filtering
         bool sw_diffuse_filter;

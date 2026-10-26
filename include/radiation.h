@@ -22,6 +22,7 @@
 #define RADIATION_H
 
 #include <memory>
+#include <functional>
 #include <vector>
 #include "field3d_operators.h"
 #include "field3d_io.h"
@@ -67,6 +68,14 @@ class Radiation
         virtual std::vector<TF>& get_surface_radiation(const std::string&) = 0;
         virtual std::vector<TF>& get_surface_emissivity(const std::string&) = 0;
         virtual std::vector<TF>& get_surface_albedo(const std::string&) = 0;
+
+        // Patch 63 (apply_ib_radiation.py): the immersed-boundary surface of
+        // every column (terrain height and a function that returns the
+        // surface temperature, both with ghost cells), so that a column
+        // scheme can start its columns at the IB surface. No-op by default.
+        virtual void set_ib_surface(
+                const std::vector<TF>*,
+                std::function<void(std::vector<TF>&)>) {}
 
         // virtual void exec_stats(Stats<TF>&, Thermo<TF>&, Timeloop<TF>&) = 0;
         // virtual void exec_cross(Cross<TF>&, unsigned long, Thermo<TF>&, Timeloop<TF>&) = 0;

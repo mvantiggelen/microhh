@@ -73,6 +73,10 @@ Dump<TF>::Dump(Master& masterin, Grid<TF>& gridin, Fields<TF>& fieldsin, Input& 
 {
     swdump = inputin.get_item<bool>("dump", "swdump", "", false);
     swdump_sub = inputin.get_item<bool>("dump", "swdump_sub", "", false);
+    // apply_dump_every_sample.py: save_dump writes only at multiples of
+    // 21600 iotime (a leftover of the EUREC4A runs, kept as the default);
+    // with this switch it writes at every sampletime.
+    sw_dump_every_sample = inputin.get_item<bool>("dump", "sw_dump_every_sample", "", false);
 
     if (swdump || swdump_sub)
     {
@@ -181,7 +185,7 @@ void Dump<TF>::save_dump(TF* data, const std::string& varname, int iotime)
     const double no_offset = 0.;
     char filename[256];
 
-    if (swdump && iotime % 21600 == 0)
+    if (swdump && (sw_dump_every_sample || iotime % 21600 == 0))
     {
         std::snprintf(filename, 256, "%s.%07d", varname.c_str(), iotime);
         std::ifstream infile(filename);

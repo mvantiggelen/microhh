@@ -679,6 +679,10 @@ Radiation_rrtmgp<TF>::Radiation_rrtmgp(
 
     dt_rad = inputin.get_item<double>("radiation", "dt_rad", "");
 
+    // Patch 63 (apply_ib_radiation.py): columns that start at the immersed
+    // boundary instead of the domain floor.
+    sw_ib_columns = inputin.get_item<bool>("radiation", "sw_ib_columns", "", false);
+
     t_sfc       = inputin.get_item<Float>("radiation", "t_sfc"      , "");
     tsi_scaling = inputin.get_item<Float>("radiation", "tsi_scaling", "", -999.);
 
@@ -1749,6 +1753,20 @@ void Radiation_rrtmgp<TF>::exec(
         Array<Float,2> flux_dn ({gd.imax*gd.jmax, gd.ktot+1});
         Array<Float,2> flux_net({gd.imax*gd.jmax, gd.ktot+1});
 
+        // Patch 63: start every column at the immersed-boundary surface.
+        use_ib_p = false;
+        if (sw_ib_columns)
+        {
+            std::vector<int> ij_list(gd.imax*gd.jmax);
+            for (int j=0; j<gd.jmax; ++j)
+                for (int i=0; i<gd.imax; ++i)
+                    ij_list[i + j*gd.imax] = (i+gd.igc) + (j+gd.jgc)*gd.icells;
+            set_ib_columns(
+                    ij_list,
+                    thermo.get_basestate_vector("p"), thermo.get_basestate_vector("ph"),
+                    t_lay_a, t_lev_a, t_sfc_a, h2o_a, clwp_a, ciwp_a);
+        }
+
         const bool compute_clouds = true;
 
         // get aerosol mixing ratios
@@ -1972,6 +1990,11 @@ void Radiation_rrtmgp<TF>::exec(
         fields.release_tmp(rh);
         fields.release_tmp(clwp);
         fields.release_tmp(ciwp);
+
+        // Patch 63: the heating of each cut cell belongs to its air part.
+        if (use_ib_p)
+            correct_ib_heating(thermo);
+        use_ib_p = false;
     }
 
     // Always add the tendency.
@@ -1982,6 +2005,179 @@ void Radiation_rrtmgp<TF>::exec(
             gd.icells, gd.ijcells);
 
     stats.calc_tend(*fields.st.at("thl"), tend_name);
+}
+
+
+template<typename TF>
+void Radiation_rrtmgp<TF>::set_ib_surface(
+        const std::vector<TF>* dem, std::function<void(std::vector<TF>&)> get_tsurf)
+{
+    // Patch 63 (apply_ib_radiation.py): the IB hands over its terrain and
+    // surface temperature; used only with [radiation] sw_ib_columns=true.
+    auto& gd = grid.get_grid_data();
+    if (dem == nullptr || dem->size() != size_t(gd.ijcells))
+    {
+        if (sw_ib_columns)
+            throw std::runtime_error("[radiation] sw_ib_columns=true needs [IB] sw_immersed_boundary=dem");
+        return;
+    }
+    ib_dem = dem;
+    ib_get_tsurf = get_tsurf;
+    if (sw_ib_columns)
+        master.print_message("RRTMGP: columns start at the IB surface (sw_ib_columns, patch 63)\n");
+}
+
+
+template<typename TF>
+void Radiation_rrtmgp<TF>::set_ib_columns(
+        const std::vector<int>& ij_list,
+        const std::vector<TF>& p, const std::vector<TF>& ph,
+        Array<Float,2>& t_lay, Array<Float,2>& t_lev, Array<Float,1>& t_sfc,
+        Array<Float,2>& h2o, Array<Float,2>& clwp, Array<Float,2>& ciwp)
+{
+    /* Patch 63 (apply_ib_radiation.py). Make every radiation column start at
+       the immersed-boundary surface z_s (the DEM of the column):
+
+       - every half level at or below z_s gets the surface pressure p_s
+         (log-linear in the base-state ph; plus 0.01 Pa per terrain layer,
+         as RTE needs tau > 0) and the surface temperature T_s, so the layers
+         inside the terrain have no gas or cloud optical depth to speak of
+         (tau ~ 1e-7), and RTE carries the surface fluxes unchanged down to
+         the first level, where store_surface_fluxes takes them;
+       - the layer that holds z_s keeps its air part only: bottom pressure
+         p_s, cloud paths scaled by the air fraction f (from the layer above
+         if its centre is in the terrain, where the fields are IB ghost
+         values), temperature between T_s and its top level;
+       - t_sfc is T_s: the SEB skin temperature (prescribed on ice), from
+         Immersed_boundary::get_surface_temperature.
+
+       The fluxes at the first level are then those at the IB surface, which
+       the IB surface energy balance reads through get_surface_radiation. */
+    auto& gd = grid.get_grid_data();
+    if (ib_dem == nullptr)
+        throw std::runtime_error("[radiation] sw_ib_columns=true but no IB surface was set");
+
+    const int n_col = ij_list.size();
+    const int n_lay = gd.ktot;
+    const int n_lev = gd.ktot+1;
+    const std::vector<TF>& dem = *ib_dem;
+
+    ib_get_tsurf(ib_tsurf);
+
+    // New arrays: the column count differs between the domain and the
+    // [column] stations, and an Array cannot be resized once it is set.
+    p_lay_ib = Array<Float,2>({n_col, n_lay});
+    p_lev_ib = Array<Float,2>({n_col, n_lev});
+    ib_kcut.assign(n_col, -1);
+    ib_fair.assign(n_col, TF(1));
+
+    for (int n=0; n<n_col; ++n)
+    {
+        const int ij = ij_list[n];
+        const int icol = n+1;
+        const TF zs = dem[ij];
+
+        for (int ilay=1; ilay<=n_lay; ++ilay)
+            p_lay_ib({icol, ilay}) = p[gd.kstart + ilay-1];
+        for (int ilev=1; ilev<=n_lev; ++ilev)
+            p_lev_ib({icol, ilev}) = ph[gd.kstart + ilev-1];
+
+        if (zs <= gd.zh[gd.kstart] + TF(1e-6))
+            continue;
+
+        // The layer kk that holds the surface: zh[kk] <= zs < zh[kk+1].
+        int kk = gd.kstart;
+        while (kk < gd.kend-1 && gd.zh[kk+1] <= zs)
+            ++kk;
+        const TF zs_c = std::min(zs, gd.zh[kk+1] - TF(1e-6)*gd.dz[kk]);
+        const TF a = (zs_c - gd.zh[kk]) / (gd.zh[kk+1] - gd.zh[kk]);
+        const TF p_s = std::exp((TF(1)-a)*std::log(ph[kk]) + a*std::log(ph[kk+1]));
+        const TF t_s = ib_tsurf[ij];
+
+        // Levels at or below the surface. Not exactly p_s: RTE needs a
+        // non-zero optical depth (tau = 0 gives NaN in the source function),
+        // so every terrain layer gets dp_rock = 0.01 Pa (tau ~ 1e-7).
+        const TF dp_rock = TF(0.01);
+        for (int k=gd.kstart; k<=kk; ++k)
+        {
+            const int ilev = k - gd.kstart + 1;
+            p_lev_ib({icol, ilev}) = p_s + TF(kk - k)*dp_rock;
+            t_lev({icol, ilev}) = t_s;
+        }
+
+        // Layers entirely in the terrain.
+        for (int k=gd.kstart; k<kk; ++k)
+        {
+            const int ilay = k - gd.kstart + 1;
+            p_lay_ib({icol, ilay}) = p_s + (TF(kk - k) - TF(0.5))*dp_rock;
+            t_lay({icol, ilay}) = t_s;
+            clwp({icol, ilay}) = Float(0);
+            ciwp({icol, ilay}) = Float(0);
+        }
+
+        // The cut layer: its air part only.
+        const int ilay = kk - gd.kstart + 1;
+        const TF f = (gd.zh[kk+1] - zs_c) / (gd.zh[kk+1] - gd.zh[kk]);
+        p_lay_ib({icol, ilay}) = TF(0.5)*(p_s + ph[kk+1]);
+        if (gd.z[kk] <= zs && ilay < n_lay)
+        {
+            // Centre in the terrain: the fields there are IB ghost values.
+            const TF r = f * gd.dz[kk] / gd.dz[kk+1];
+            t_lay({icol, ilay}) = TF(0.5)*(t_s + t_lev({icol, ilay+1}));
+            h2o({icol, ilay}) = h2o({icol, ilay+1});
+            clwp({icol, ilay}) = clwp({icol, ilay+1}) * r;
+            ciwp({icol, ilay}) = ciwp({icol, ilay+1}) * r;
+        }
+        else
+        {
+            clwp({icol, ilay}) *= f;
+            ciwp({icol, ilay}) *= f;
+        }
+
+        t_sfc({icol}) = t_s;
+        ib_kcut[n] = kk;
+        ib_fair[n] = f;
+    }
+
+    use_ib_p = true;
+}
+
+
+template<typename TF>
+void Radiation_rrtmgp<TF>::correct_ib_heating(Thermo<TF>& thermo)
+{
+    /* Patch 63. The flux divergence of the cut layer is the energy its air
+       part absorbs. If the cell centre is in the air the model carries that
+       cell as a whole air cell, so calc_tendency's rate (divergence over the
+       mass of the whole cell) already puts exactly that energy into it. If
+       the centre is in the terrain the cell is an IB ghost cell, reset
+       every step, and the energy would be lost: it goes to the cell above. */
+    auto& gd = grid.get_grid_data();
+    TF* const thlt = fields.sd.at("thlt_rad")->fld.data();
+    const std::vector<TF>& exner = thermo.get_basestate_vector("exner");
+    const std::vector<TF>& rho = fields.rhoref;
+
+    for (int j=0; j<gd.jmax; ++j)
+        for (int i=0; i<gd.imax; ++i)
+        {
+            const int n = i + j*gd.imax;
+            const int kk = ib_kcut[n];
+            if (kk < 0)
+                continue;
+            const int ij = (i+gd.igc) + (j+gd.jgc)*gd.icells;
+            const int ijk = ij + kk*gd.ijcells;
+            const TF zs = (*ib_dem)[ij];
+
+            if (gd.z[kk] > zs || kk >= gd.kend-1)
+                continue;
+            else
+            {
+                const int ijkp = ijk + gd.ijcells;
+                thlt[ijkp] += thlt[ijk] * (rho[kk]*gd.dz[kk]*exner[kk])
+                                        / (rho[kk+1]*gd.dz[kk+1]*exner[kk+1]);
+                thlt[ijk] = TF(0);
+            }
+        }
 }
 
 
@@ -2190,6 +2386,19 @@ void Radiation_rrtmgp<TF>::exec_individual_column_stats(
 
     Array<Float,2> ciwp_a(
             std::vector<Float>(it, it + n_cols * gd.ktot), {n_cols, gd.ktot});
+
+    // Patch 63: these columns start at the IB surface too.
+    use_ib_p = false;
+    if (sw_ib_columns)
+    {
+        std::vector<int> ij_list(n_cols);
+        for (int n=0; n<n_cols; ++n)
+            ij_list[n] = col_i[n] + col_j[n]*gd.icells;
+        set_ib_columns(
+                ij_list,
+                thermo.get_basestate_vector("p"), thermo.get_basestate_vector("ph"),
+                t_lay_a, t_lev_a, t_sfc_a, h2o_a, clwp_a, ciwp_a);
+    }
 
     // Output arrays.
     Array<Float,2> flux_up    ({n_cols, gd.ktot+1});
@@ -2401,8 +2610,11 @@ void Radiation_rrtmgp<TF>::exec_longwave(
     // Define the arrays that contain the subsets.
     const std::vector<Float>& p  = thermo.get_basestate_vector("p");
     const std::vector<Float>& ph = thermo.get_basestate_vector("ph");
-    Array<Float,2> p_lay(std::vector<Float>(p.begin()  + gd.kstart, p.begin()  + gd.kend  ), {1, n_lay});
-    Array<Float,2> p_lev(std::vector<Float>(ph.begin() + gd.kstart, ph.begin() + gd.kend+1), {1, n_lev});
+    // Patch 63: per-column pressures that start at the IB surface.
+    Array<Float,2> p_lay = use_ib_p ? p_lay_ib
+        : Array<Float,2>(std::vector<Float>(p.begin()  + gd.kstart, p.begin()  + gd.kend  ), {1, n_lay});
+    Array<Float,2> p_lev = use_ib_p ? p_lev_ib
+        : Array<Float,2>(std::vector<Float>(ph.begin() + gd.kstart, ph.begin() + gd.kend+1), {1, n_lev});
 
     gas_concs.set_vmr("h2o", h2o);
     Array<Float,2> col_dry({n_col, n_lay});
@@ -2613,8 +2825,11 @@ void Radiation_rrtmgp<TF>::exec_shortwave(
     // Define the arrays that contain the subsets.
     std::vector<Float> p  = thermo.get_basestate_vector("p");
     std::vector<Float> ph = thermo.get_basestate_vector("ph");
-    Array<Float,2> p_lay(std::vector<Float>(p.begin()  + gd.kstart, p.begin()  + gd.kend  ), {1, n_lay});
-    Array<Float,2> p_lev(std::vector<Float>(ph.begin() + gd.kstart, ph.begin() + gd.kend+1), {1, n_lev});
+    // Patch 63: per-column pressures that start at the IB surface.
+    Array<Float,2> p_lay = use_ib_p ? p_lay_ib
+        : Array<Float,2>(std::vector<Float>(p.begin()  + gd.kstart, p.begin()  + gd.kend  ), {1, n_lay});
+    Array<Float,2> p_lev = use_ib_p ? p_lev_ib
+        : Array<Float,2>(std::vector<Float>(ph.begin() + gd.kstart, ph.begin() + gd.kend+1), {1, n_lev});
 
     // Create the boundary conditions
     Array<Float,1> mu0(std::vector<Float>(1, this->mu0), {1});

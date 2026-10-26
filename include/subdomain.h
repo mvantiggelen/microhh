@@ -71,6 +71,17 @@ class Subdomain
         int grid_ratio_ij;
         int grid_ratio_k;
 
+        // [subdomain] interpolation=linear (patch 61).
+        bool sw_linear = false;
+
+        // Vertical window of the sub-domain, in parent heights. The child's
+        // column covers only the parent layers between zstart and zend
+        // (defaults 0 and zsize: the full column), and its z=0 is at zstart.
+        TF zstart;
+        TF zend;
+        int kstart_window;  // First parent layer (0-based, without ghost cells) in the window.
+        int kend_window;    // One past the last parent layer in the window.
+
         int n_ghost;
         int n_sponge;
 

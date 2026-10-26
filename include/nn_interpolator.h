@@ -45,7 +45,8 @@ class NN_interpolator
             const std::vector<TF>& y,
             const std::vector<TF>& z,
             Master&,
-            Grid<TF>&);
+            Grid<TF>&,
+            const bool sw_linear=false);
 
         // Not all tasks have data.
         bool has_data;
@@ -68,6 +69,16 @@ class NN_interpolator
         std::vector<int> nn_i;
         std::vector<int> nn_j;
         std::vector<int> nn_k;
+
+        // [subdomain] interpolation=linear (patch 61): offsets of the targets
+        // from their nearest parent point, and the parent coordinates.
+        bool sw_linear;
+        std::vector<TF> off_i;
+        std::vector<TF> off_j;
+        std::vector<TF> off_k;
+        std::vector<TF> x_par;
+        std::vector<TF> y_par;
+        std::vector<TF> z_par;
 
         TF& operator()(const int i, const int j, const int k)
         {

@@ -72,6 +72,8 @@ class Microphys_nsw6 : public Microphys<TF>
         TF get_Nc0() { return this->Nc0; }
         TF get_Ni0() { return static_cast<TF>(1e5); } // CvH: this is a temporary fix with previous default value, Ni0 is 3D in tomita!
 
+        void set_ib_surface(const std::vector<unsigned int>&);  // patch 62
+
         unsigned long get_time_limit(unsigned long, double);
 
         #ifdef USECUDA
@@ -102,6 +104,14 @@ class Microphys_nsw6 : public Microphys<TF>
         std::vector<TF> rr_bot; // Rain rate at the bottom.
         std::vector<TF> rs_bot; // Snow rate at the bottom.
         std::vector<TF> rg_bot; // Graupel rate at the bottom.
+
+        // Patch 62: precipitation onto the immersed boundary, the
+        // sedimentation flux through the bottom face of the first air cell
+        // of every column (k_ib, absolute index; empty without an IB).
+        std::vector<unsigned int> k_ib;
+        std::vector<TF> rr_bot_ib;
+        std::vector<TF> rs_bot_ib;
+        std::vector<TF> rg_bot_ib;
 
         #ifdef USECUDA
         TF* rr_bot_g;

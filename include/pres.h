@@ -52,6 +52,12 @@ class Pres
         virtual void exec(double, Stats<TF>&) = 0;
         virtual TF check_divergence() = 0;
 
+        // Cells (no-ghost-cell index) whose right-hand side is set to zero:
+        // the inside of the IB terrain under [IB] sw_wall_kinematic, which
+        // keeps its divergence as a mass source (apply_ib_wall_kinematic.py).
+        // Only Pres_2 on the CPU uses it.
+        void set_rhs_zero_cells(const std::vector<int>& cells) { rhs_zero_cells = cells; }
+
         #ifdef USECUDA
         virtual void prepare_device() = 0;
         virtual void clear_device() = 0;
@@ -62,6 +68,9 @@ class Pres
         Grid<TF>& grid;
         Fields<TF>& fields;
         FFT<TF>& fft;
+
+        std::vector<int> rhs_zero_cells;
+        bool rhs_zero_reported = false;
 
         Field3d_operators<TF> field3d_operators;
 

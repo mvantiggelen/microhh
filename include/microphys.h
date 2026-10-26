@@ -72,6 +72,11 @@ class Microphys
         virtual TF get_Nc0() = 0;
         virtual TF get_Ni0() = 0;
 
+        // Patch 62 (apply_ib_micro.py): the first air level of every column
+        // above an immersed boundary, so that a scheme can report the
+        // precipitation onto the IB surface. No-op by default.
+        virtual void set_ib_surface(const std::vector<unsigned int>&) {}
+
         // GPU functions and variables.
         #ifdef USECUDA
         virtual void get_surface_rain_rate_g(TF*) = 0;

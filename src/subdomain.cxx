@@ -76,10 +76,27 @@ Subdomain<TF>::Subdomain(
         grid_ratio_ij = inputin.get_item<int>("subdomain", "grid_ratio_ij", "");
         grid_ratio_k = inputin.get_item<int>("subdomain", "grid_ratio_k", "", 1);
 
+        // Optional vertical window (parent heights); a negative zend means the parent's top.
+        zstart = inputin.get_item<TF>("subdomain", "zstart", "", TF(0));
+        zend = inputin.get_item<TF>("subdomain", "zend", "", TF(-1));
+
         n_ghost = inputin.get_item<int>("subdomain", "n_ghost", "");
         n_sponge = inputin.get_item<int>("subdomain", "n_sponge", "");
 
         savetime_bcs = inputin.get_item<int>("subdomain", "savetime_bcs", "");
+
+        // How the child's values are taken from the parent (patch 61):
+        // "nearest" (default, upstream) copies the parent cell, "linear" adds
+        // limited slopes inside it (conservative, no staircase).
+        const std::string interpolation = inputin.get_item<std::string>(
+                "subdomain", "interpolation", "", "nearest");
+
+        if (interpolation == "nearest")
+            sw_linear = false;
+        else if (interpolation == "linear")
+            sw_linear = true;
+        else
+            throw std::runtime_error("Invalid [subdomain] interpolation=" + interpolation + ", use nearest or linear.");
 
         if (sw_save_buffer)
         {
@@ -130,6 +147,40 @@ void Subdomain<TF>::create()
     if (error)
         throw std::runtime_error("Sub-domain boundaries not aligned with parent grid.");
 
+    // Vertical window: both ends must be parent half levels.
+    if (zend < TF(0))
+        zend = gd.zsize;
+
+    auto find_half_level = [&](const TF z_target, const std::string& name)
+    {
+        for (int k=0; k<=gd.ktot; ++k)
+            if (is_equal(gd.zh[k + gd.kstart], z_target) || std::abs(gd.zh[k + gd.kstart] - z_target) < TF(1e-6) * gd.zsize)
+                return k;
+
+        master.print_message(
+            "ERROR: [subdomain] " + name + "=" + std::to_string(z_target) + " is not a half level of the parent grid.\n");
+        throw std::runtime_error("Sub-domain vertical window not aligned with parent grid.");
+    };
+
+    kstart_window = find_half_level(zstart, "zstart");
+    kend_window = find_half_level(zend, "zend");
+
+    if (kend_window <= kstart_window)
+        throw std::runtime_error("Sub-domain vertical window is empty: zend must be above zstart.");
+
+    // Snap to the exact parent half levels.
+    zstart = gd.zh[kstart_window + gd.kstart];
+    zend = gd.zh[kend_window + gd.kstart];
+
+    const int ktot_window = kend_window - kstart_window;
+
+    if (kstart_window > 0 || kend_window < gd.ktot)
+        master.print_message(
+                "Sub-domain vertical window: parent layers %d..%d (z = %g .. %g m), "
+                "child ktot = %d, child z = 0 at parent z = %g m\n",
+                kstart_window, kend_window - 1, double(zstart), double(zend),
+                grid_ratio_k * ktot_window, double(zstart));
+
     // Initialise LBCs instance.
     xsize = xend - xstart;
     ysize = yend - ystart;
@@ -167,23 +218,26 @@ void Subdomain<TF>::create()
     std::vector<TF> z;
     std::vector<TF> zh;
 
+    // Only the parent layers inside the vertical window are refined
+    // (the full column unless [subdomain] zstart/zend are set).
     if (grid_ratio_k > 1)
     {
-        const int ktot_n = grid_ratio_k * gd.ktot;
+        const int ktot_n = grid_ratio_k * ktot_window;
 
         // Define new grid location (without ghost cells).
         z.resize(ktot_n);
         std::vector<TF> zh_tmp(ktot_n+1);
 
         // Calculate new half level heights.
-        for (int k=0; k<gd.ktot; ++k)
+        for (int k=0; k<ktot_window; ++k)
         {
-            const int kk = k + gd.kgc;
+            const int kk = k + kstart_window + gd.kgc;
             const TF dz = gd.dz[kk] / grid_ratio_k;
 
             for (int s=0; s<grid_ratio_k; ++s)
                 zh_tmp[k * grid_ratio_k + s] = gd.zh[kk] + s * dz;
         }
+        zh_tmp[ktot_n] = zend;
 
         // Reconstruct new full level heights.
         z[0] = TF(0.5) * (zh_tmp[0] + zh_tmp[1]);
@@ -195,8 +249,8 @@ void Subdomain<TF>::create()
     }
     else
     {
-        z  = std::vector<TF>(gd.z.begin()  + gd.kstart, gd.z.begin()  + gd.kend);
-        zh = std::vector<TF>(gd.zh.begin() + gd.kstart, gd.zh.begin() + gd.kend);
+        z  = std::vector<TF>(gd.z.begin()  + gd.kstart + kstart_window, gd.z.begin()  + gd.kstart + kend_window);
+        zh = std::vector<TF>(gd.zh.begin() + gd.kstart + kstart_window, gd.zh.begin() + gd.kstart + kend_window);
     }
 
 
@@ -212,7 +266,7 @@ void Subdomain<TF>::create()
         const int kstart = gd.kgc;
         const int ktot = gd.ktot;
 
-        return std::make_unique<NN_interpolator<TF>>(x_lbc, y_lbc, z_lbc, x, y, z, master, grid);
+        return std::make_unique<NN_interpolator<TF>>(x_lbc, y_lbc, z_lbc, x, y, z, master, grid, sw_linear);
     };
 
     // Scalars.
@@ -246,16 +300,19 @@ void Subdomain<TF>::create()
         // NN-interpolated `w` at domain top.
         std::vector<TF> x_bc = nnk::arange<TF>(xstart + 0.5 * dx, xend, dx);
         std::vector<TF> y_bc = nnk::arange<TF>(ystart + 0.5 * dy, yend, dy);
-        std::vector<TF> zh_bc = {gd.zsize};
+        // At the top of the vertical window (the parent's top by default).
+        std::vector<TF> zh_bc = {zend};
 
-        bc_wtop = std::make_unique<NN_interpolator<TF>>(x_bc, y_bc, zh_bc, gd.x, gd.y, gd.zh, master, grid);
+        bc_wtop = std::make_unique<NN_interpolator<TF>>(x_bc, y_bc, zh_bc, gd.x, gd.y, gd.zh, master, grid, sw_linear);
     }
 
     if (sw_save_buffer)
     {
         // Find start indexes of buffer layer in new vertical coordinates.
-        auto it  = std::lower_bound(z.begin(),  z.end(),  zstart_buffer);
-        auto ith = std::lower_bound(zh.begin(), zh.end(), zstart_buffer);
+        // `zstart_buffer` is in the child's heights (its own [buffer] zstart);
+        // z and zh are parent heights, offset by the window bottom.
+        auto it  = std::lower_bound(z.begin(),  z.end(),  zstart_buffer + zstart);
+        auto ith = std::lower_bound(zh.begin(), zh.end(), zstart_buffer + zstart);
 
         if (it == z.end())
             throw std::runtime_error("Output buffer subdomain is too close to the model top.");
@@ -269,8 +326,8 @@ void Subdomain<TF>::create()
         std::vector<TF> z_bc(z.begin() + kstart, z.end());
         std::vector<TF> zh_bc(zh.begin() + kstarth, zh.end());
 
-        bc_buffer  = std::make_unique<NN_interpolator<TF>>(x_bc, y_bc, z_bc,  gd.x, gd.y, gd.z,  master, grid);
-        bc_bufferh = std::make_unique<NN_interpolator<TF>>(x_bc, y_bc, zh_bc, gd.x, gd.y, gd.zh, master, grid);
+        bc_buffer  = std::make_unique<NN_interpolator<TF>>(x_bc, y_bc, z_bc,  gd.x, gd.y, gd.z,  master, grid, sw_linear);
+        bc_bufferh = std::make_unique<NN_interpolator<TF>>(x_bc, y_bc, zh_bc, gd.x, gd.y, gd.zh, master, grid, sw_linear);
     }
 }
 

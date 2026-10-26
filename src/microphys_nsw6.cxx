@@ -1027,6 +1027,23 @@ void Microphys_nsw6<TF>::init()
 }
 
 template<typename TF>
+void Microphys_nsw6<TF>::set_ib_surface(const std::vector<unsigned int>& k_dem)
+{
+    // Patch 62 (apply_ib_micro.py): k_dem[ij] is the first level whose
+    // centre is above the terrain. Rain leaves the air through the bottom
+    // face of that cell; below it the IB resets the fields every step.
+    auto& gd = grid.get_grid_data();
+    if (k_dem.size() != size_t(gd.ijcells))
+        return;
+
+    k_ib = k_dem;
+    rr_bot_ib.assign(gd.ijcells, TF(0));
+    rs_bot_ib.assign(gd.ijcells, TF(0));
+    rg_bot_ib.assign(gd.ijcells, TF(0));
+    master.print_message("nsw6: precipitation onto the IB surface (rr_bot_ib, rs_bot_ib, rg_bot_ib)\n");
+}
+
+template<typename TF>
 void Microphys_nsw6<TF>::create(
         Input& inputin, Netcdf_handle& input_nc,
         Stats<TF>& stats, Cross<TF>& cross, Dump<TF>& dump, Column<TF>& column)
@@ -1040,6 +1057,14 @@ void Microphys_nsw6<TF>::create(
         stats.add_time_series("rr", "Mean surface rain rate", "kg m-2 s-1", group_name);
         stats.add_time_series("rs", "Mean surface snow rate", "kg m-2 s-1", group_name);
         stats.add_time_series("rg", "Mean surface graupel rate", "kg m-2 s-1", group_name);
+        if (!k_ib.empty())
+        {
+            // Named as the cross-sections (rr_bot_ib, ...): "rs_ib" is the
+            // vegetation surface resistance of the IB column output (patch 65).
+            stats.add_time_series("rr_bot_ib", "Mean rain rate onto the IB surface", "kg m-2 s-1", group_name);
+            stats.add_time_series("rs_bot_ib", "Mean snow rate onto the IB surface", "kg m-2 s-1", group_name);
+            stats.add_time_series("rg_bot_ib", "Mean graupel rate onto the IB surface", "kg m-2 s-1", group_name);
+        }
 
         stats.add_tendency(*fields.st.at("thl"), "z", tend_name, tend_longname);
         stats.add_tendency(*fields.st.at("qt") , "z", tend_name, tend_longname);
@@ -1053,6 +1078,12 @@ void Microphys_nsw6<TF>::create(
         column.add_time_series("rr", "Surface rain rate", "kg m-2 s-1");
         column.add_time_series("rs", "Surface snow rate", "kg m-2 s-1");
         column.add_time_series("rg", "Surface graupel rate", "kg m-2 s-1");
+        if (!k_ib.empty())
+        {
+            column.add_time_series("rr_bot_ib", "Rain rate onto the IB surface", "kg m-2 s-1");
+            column.add_time_series("rs_bot_ib", "Snow rate onto the IB surface", "kg m-2 s-1");
+            column.add_time_series("rg_bot_ib", "Graupel rate onto the IB surface", "kg m-2 s-1");
+        }
 
         column.add_time_series("qr_path", "Rain water path", "kg m-2");
         column.add_time_series("qs_path", "Snow path", "kg m-2");
@@ -1061,7 +1092,10 @@ void Microphys_nsw6<TF>::create(
 
     // Create cross sections
     // 1. Variables that this class can calculate/provide:
-    const std::vector<std::string> allowed_crossvars = {"rr_bot", "rs_bot", "rg_bot", "rsgr_bot", "qrqsqg_path"};
+    std::vector<std::string> allowed_crossvars = {"rr_bot", "rs_bot", "rg_bot", "rsgr_bot", "qrqsqg_path"};
+    if (!k_ib.empty())
+        for (const std::string& v : {"rr_bot_ib", "rs_bot_ib", "rg_bot_ib", "rsgr_bot_ib"})
+            allowed_crossvars.push_back(v);
 
     // 2. Cross-reference with the variables requested in the .ini file:
     crosslist = cross.get_enabled_variables(allowed_crossvars);
@@ -1115,6 +1149,21 @@ void Microphys_nsw6<TF>::exec(Thermo<TF>& thermo, const double dt, Stats<TF>& st
     auto tmp3 = fields.get_tmp();
     auto tmp4 = fields.get_tmp();
 
+    // Patch 62: the sedimentation flux through the bottom face of the first
+    // air cell of each column (tmp4 holds the flux, kg m-2 s-1, negative down).
+    auto store_ib_precip = [&](std::vector<TF>& out, const TF* const flux)
+    {
+        if (k_ib.empty())
+            return;
+        for (int j=gd.jstart; j<gd.jend; ++j)
+            for (int i=gd.istart; i<gd.iend; ++i)
+            {
+                const int ij = i + j*gd.icells;
+                const int k = std::max(int(k_ib[ij]), gd.kstart);
+                out[ij] = -flux[ij + k*gd.ijcells];
+            }
+    };
+
     // Falling rain.
     sedimentation_ss08(
             fields.st.at("qr")->fld.data(), rr_bot.data(),
@@ -1129,6 +1178,7 @@ void Microphys_nsw6<TF>::exec(Thermo<TF>& thermo, const double dt, Stats<TF>& st
             gd.istart, gd.jstart, gd.kstart,
             gd.iend, gd.jend, gd.kend,
             gd.icells, gd.ijcells);
+    store_ib_precip(rr_bot_ib, tmp4->fld.data());
 
     // Falling snow.
     sedimentation_ss08(
@@ -1144,6 +1194,7 @@ void Microphys_nsw6<TF>::exec(Thermo<TF>& thermo, const double dt, Stats<TF>& st
             gd.istart, gd.jstart, gd.kstart,
             gd.iend, gd.jend, gd.kend,
             gd.icells, gd.ijcells);
+    store_ib_precip(rs_bot_ib, tmp4->fld.data());
 
     // Falling graupel.
     sedimentation_ss08(
@@ -1159,6 +1210,7 @@ void Microphys_nsw6<TF>::exec(Thermo<TF>& thermo, const double dt, Stats<TF>& st
             gd.istart, gd.jstart, gd.kstart,
             gd.iend, gd.jend, gd.kend,
             gd.icells, gd.ijcells);
+    store_ib_precip(rg_bot_ib, tmp4->fld.data());
 
     fields.release_tmp(tmp1);
     fields.release_tmp(tmp2);
@@ -1181,6 +1233,12 @@ void Microphys_nsw6<TF>::exec_stats(Stats<TF>& stats, Thermo<TF>& thermo, const 
     stats.calc_stats_2d("rr", rr_bot, no_offset);
     stats.calc_stats_2d("rs", rs_bot, no_offset);
     stats.calc_stats_2d("rg", rg_bot, no_offset);
+    if (!k_ib.empty())
+    {
+        stats.calc_stats_2d("rr_bot_ib", rr_bot_ib, no_offset);
+        stats.calc_stats_2d("rs_bot_ib", rs_bot_ib, no_offset);
+        stats.calc_stats_2d("rg_bot_ib", rg_bot_ib, no_offset);
+    }
 }
 
 #ifndef USECUDA
@@ -1194,6 +1252,12 @@ void Microphys_nsw6<TF>::exec_column(Column<TF>& column)
     column.calc_time_series("rr", rr_bot.data(), no_offset);
     column.calc_time_series("rs", rs_bot.data(), no_offset);
     column.calc_time_series("rg", rg_bot.data(), no_offset);
+    if (!k_ib.empty())
+    {
+        column.calc_time_series("rr_bot_ib", rr_bot_ib.data(), no_offset);
+        column.calc_time_series("rs_bot_ib", rs_bot_ib.data(), no_offset);
+        column.calc_time_series("rg_bot_ib", rg_bot_ib.data(), no_offset);
+    }
 
     auto tmp = fields.get_tmp();
 
@@ -1256,6 +1320,28 @@ void Microphys_nsw6<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
 
             else if (it == "rg_bot")
                 cross.cross_plane(rg_bot.data(), no_offset, "rg_bot", iotime);
+
+            // Patch 62: onto the immersed boundary.
+            else if (it == "rr_bot_ib")
+                cross.cross_plane(rr_bot_ib.data(), no_offset, "rr_bot_ib", iotime);
+            else if (it == "rs_bot_ib")
+                cross.cross_plane(rs_bot_ib.data(), no_offset, "rs_bot_ib", iotime);
+            else if (it == "rg_bot_ib")
+                cross.cross_plane(rg_bot_ib.data(), no_offset, "rg_bot_ib", iotime);
+            else if (it == "rsgr_bot_ib")
+            {
+                auto tmp = fields.get_tmp();
+                sum_xy_slices(
+                        tmp->fld_bot.data(),
+                        rr_bot_ib.data(),
+                        rs_bot_ib.data(),
+                        rg_bot_ib.data(),
+                        gd.istart, gd.iend,
+                        gd.jstart, gd.jend,
+                        gd.icells);
+                cross.cross_plane(tmp->fld_bot.data(), no_offset, "rsgr_bot_ib", iotime);
+                fields.release_tmp(tmp);
+            }
 
             else if (it == "rsgr_bot")
             {

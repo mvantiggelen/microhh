@@ -51,7 +51,8 @@ NN_interpolator<TF>::NN_interpolator(
     const std::vector<TF>& y,
     const std::vector<TF>& z,
     Master& masterin,
-    Grid<TF>& gridin) : master(masterin), grid(gridin)
+    Grid<TF>& gridin,
+    const bool sw_linear_in) : master(masterin), grid(gridin), sw_linear(sw_linear_in)
 {
     auto& gd = grid.get_grid_data();
     auto& md = master.get_MPI_data();
@@ -96,6 +97,16 @@ NN_interpolator<TF>::NN_interpolator(
         this->nn_i = nnk::get_nn_indexes<TF>(x_in_s, x);
         this->nn_j = nnk::get_nn_indexes<TF>(y_in_s, y);
         this->nn_k = nnk::get_nn_indexes<TF>(z_in,   z);
+
+        if (sw_linear)
+        {
+            this->off_i = nnk::get_nn_offsets<TF>(x_in_s, x, nn_i);
+            this->off_j = nnk::get_nn_offsets<TF>(y_in_s, y, nn_j);
+            this->off_k = nnk::get_nn_offsets<TF>(z_in,   z, nn_k);
+            this->x_par = x;
+            this->y_par = y;
+            this->z_par = z;
+        }
 
         //std::cout << "i: range=" << i_range.first << ":" << i_range.second << std::endl;
 
@@ -161,6 +172,34 @@ template<typename TF>
 void NN_interpolator<TF>::interpolate(const std::vector<TF>& fld_in)
 {
     auto& gd = grid.get_grid_data();
+
+    if (sw_linear)
+    {
+        nnk::linear_interpolate(
+            this->fld.data(),
+            fld_in.data(),
+            this->nn_i.data(),
+            this->nn_j.data(),
+            this->nn_k.data(),
+            this->off_i.data(),
+            this->off_j.data(),
+            this->off_k.data(),
+            this->x_par.data(),
+            this->y_par.data(),
+            this->z_par.data(),
+            this->itot_s,
+            this->jtot_s,
+            this->ktot_s,
+            this->istride,
+            this->jstride,
+            this->kstride,
+            gd.istride,
+            gd.jstride,
+            gd.kstride,
+            gd.kstart,
+            gd.kend);
+        return;
+    }
 
     nnk::nn_interpolate(
         this->fld.data(),
