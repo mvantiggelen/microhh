@@ -394,6 +394,19 @@ class Immersed_boundary
          */
         std::vector<TF> exner_ref;
 
+        // The base-state pressure on the full and half levels [Pa], refreshed
+        // by every exec_wall_model call (it follows swupdatebasestate), for
+        // ps_ib. Empty without thermodynamics.
+        std::vector<TF> base_p_ref;
+        std::vector<TF> base_ph_ref;
+
+        // cloud_cover_ib: 1 where any air cell of the column holds more
+        // condensate (ql + qi) than [IB] cloud_cover_qc_min, from the last
+        // exec_wall_model call; only computed when asked for.
+        bool sw_cloud_cover = false;
+        TF cloud_cover_qc_min;
+        std::vector<TF> cloud_cover_now;
+
 
         std::map<std::string, std::vector<TF>> sbot_2d;
 
@@ -557,8 +570,14 @@ class Immersed_boundary
             std::vector<TF> sum_col;    // sum at the previous column output
             std::vector<TF> out_cross;  // interval mean for the cross-section
             std::vector<TF> out_col;    // interval mean for the column
+            bool cross_only = false;    // [IB] mean_crosslist: no column mean
         };
         bool sw_flux_accum;
+        bool sw_flux_accum_column;              // [IB] sw_flux_accum_column
+        std::vector<std::string> mean_crosslist; // [IB] mean_crosslist
+        TF cross_sampletime_ib;                 // [IB] cross_sampletime, 0 = every [cross] output
+        TF iotime_factor;                       // 10^[time] iotimeprec: time = iotime * this
+        bool ib_cross_due(const double) const;
         std::map<std::string, Flux_accum> flux_accum;
         double accum_time;          // integrated time since the start
         double accum_time_cross;    // accum_time at the previous cross output

@@ -2206,6 +2206,38 @@ void Immersed_boundary<TF>::exec_wall_model(Thermo<TF>& thermo, Stats<TF>& stats
     if (exner_ref.empty() && !thermo_buoy)
         exner_ref = thermo.get_basestate_vector("exner");
 
+    // ps_ib: the base-state pressure, which follows swupdatebasestate.
+    if (!thermo_buoy)
+    {
+        base_p_ref = thermo.get_basestate_vector("p");
+        base_ph_ref = thermo.get_basestate_vector("ph");
+    }
+
+    // cloud_cover_ib: is there condensate anywhere in the air of the column?
+    if (sw_cloud_cover && sw_ib != IB_type::Disabled)
+    {
+        auto& gdc = grid.get_grid_data();
+        cloud_cover_now.assign(gdc.ijcells, TF(0));
+        if (thermo.get_switch() == Thermo_type::Moist)
+        {
+            auto qc = fields.get_tmp();
+            thermo.get_thermo_field(*qc, "qlqi", false, false);
+            for (int j=gdc.jstart; j<gdc.jend; ++j)
+                for (int i=gdc.istart; i<gdc.iend; ++i)
+                {
+                    const int ij = i + j*gdc.icells;
+                    for (int k=std::max(int(k_dem[ij]), gdc.kstart); k<gdc.kend; ++k)
+                        if (qc->fld[ij + k*gdc.ijcells] > cloud_cover_qc_min)
+                        {
+                            cloud_cover_now[ij] = TF(1);
+                            break;
+                        }
+                }
+            fields.release_tmp(qc);
+        }
+        boundary_cyclic.exec_2d(cloud_cover_now.data());
+    }
+
     // Put the surface energy balance's Ts back over the
     // prescribed surface condition (update_time_dependent interpolated the input
     // over it), before the stability below and the scalar ghost cells read it.
@@ -4512,6 +4544,36 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
     // sums, instead of the value at the output time.
     sw_flux_accum = inputin.get_item<bool>("IB", "sw_flux_accum", "", false);
 
+    // [IB] sw_flux_accum_column: false keeps the column time series of the
+    // fluxes instantaneous while the cross-sections still get the means.
+    sw_flux_accum_column = inputin.get_item<bool>("IB", "sw_flux_accum_column", "", true);
+
+    // [IB] mean_crosslist: IB cross-section names that are written as the
+    // mean over the output interval too (state variables such as T_2m_ib,
+    // wspd_10m_res_ib or cloud_cover_ib), on the same RK-weighted sums as the
+    // fluxes. Cross-sections only; their column series stay instantaneous.
+    mean_crosslist = inputin.get_list<std::string>(
+            "IB", "mean_crosslist", "", std::vector<std::string>());
+
+    // [IB] cross_sampletime: the IB cross-sections (every *_ib map and the
+    // terrain-following planes) only every cross_sampletime, a multiple of
+    // [cross] sampletime, so that the 3-D planes can be written more often
+    // than the surface maps. The interval means then span cross_sampletime.
+    cross_sampletime_ib = inputin.get_item<TF>("IB", "cross_sampletime", "", TF(0));
+    iotime_factor = std::pow(TF(10), inputin.get_item<int>("time", "iotimeprec", "", 0));
+    if (cross_sampletime_ib > TF(0))
+    {
+        const double cross_dt = inputin.get_item<double>("cross", "sampletime", "", 0.);
+        const double ratio = (cross_dt > 0.) ? double(cross_sampletime_ib) / cross_dt : 0.;
+        if (std::abs(ratio - std::round(ratio)) > 1e-9 || ratio < 0.5)
+            throw std::runtime_error(
+                    "[IB] cross_sampletime must be a multiple of [cross] sampletime");
+    }
+
+    // [IB] cloud_cover_qc_min: the condensate (ql + qi) above which a cell
+    // counts as cloud for cloud_cover_ib [kg kg-1].
+    cloud_cover_qc_min = inputin.get_item<TF>("IB", "cloud_cover_qc_min", "", TF(0));
+
     // [IB] sw_momentum_air_only. Only the
     // MOST stress and the pressure exchange momentum with the terrain.
     sw_momentum_air_only = inputin.get_item<bool>("IB", "sw_momentum_air_only", "", false);
@@ -4639,7 +4701,9 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
                 "dn_ib", "dn_ib_floor", "dn_ib_wall",
                 "tskin_ib", "rnet_ib", "g_ib", "albedo_ib", "t_soil_top_ib",
                 "seb_class_ib",
-                "sw_dn_ib", "lw_dn_ib"};
+                "sw_dn_ib", "lw_dn_ib", "sw_up_ib", "lw_up_ib",
+                "u_10m_res_ib", "v_10m_res_ib", "wspd_10m_res_ib", "wdir_10m_res_ib",
+                "ps_ib", "cloud_cover_ib"};
             bool hit = false;
             for (const char* nm : diag_names)
                 if (*it == nm) { hit = true; break; }
@@ -4690,6 +4754,18 @@ void Immersed_boundary<TF>::init(Input& inputin, Cross<TF>& cross)
         else
             ++it;
     }
+
+    // [IB] mean_crosslist: only names that are IB cross-sections.
+    for (const std::string& s : mean_crosslist)
+        if (std::find(crosslist.begin(), crosslist.end(), s) == crosslist.end())
+            master.print_warning(
+                    "[IB] mean_crosslist: \"%s\" is not an IB cross-section in "
+                    "[cross] crosslist; ignored\n", s.c_str());
+
+    // cloud_cover_ib needs the condensate, computed only when asked for.
+    sw_cloud_cover =
+            std::find(crosslist.begin(), crosslist.end(), "cloud_cover_ib") != crosslist.end()
+            || std::find(columnlist.begin(), columnlist.end(), "cloud_cover_ib") != columnlist.end();
 }
 
 template <typename TF>
@@ -5881,6 +5957,101 @@ bool Immersed_boundary<TF>::calc_surface_diag(
         return true;
     }
 
+    // ---- upward radiation at the surface ----------------------------------
+    // RRTMGP's upward fluxes at the first level, which with [radiation]
+    // sw_ib_columns is the IB surface: the albedo times SW down, and
+    // eps sigma Ts^4 + (1 - eps) LW down.
+    if (name == "sw_up_ib" || name == "lw_up_ib")
+    {
+        if (radiation_ptr == nullptr)
+            throw std::runtime_error(
+                    "IB: " + name + " needs the radiation (set_radiation not called)");
+        const std::vector<TF>& rad = radiation_ptr->get_surface_radiation(
+                name == "sw_up_ib" ? "sw_up" : "lw_up");
+        if (rad.size() == size_t(gd.ijcells))
+            std::copy(rad.begin(), rad.end(), out);
+        else if (rad.size() == 1)
+            std::fill(out, out + gd.ijcells, rad[0]);
+        return true;
+    }
+
+    // ---- surface pressure ---------------------------------------------------
+    // The base-state (hydrostatic) pressure at the surface height z_s of the
+    // column, log-linear between the half levels around it. The resolved
+    // pressure perturbation (a few Pa) is not included.
+    if (name == "ps_ib")
+    {
+        if (base_ph_ref.size() != size_t(gd.kcells))
+        {
+            std::fill(out, out + gd.ijcells, std::numeric_limits<TF>::quiet_NaN());
+            return true;
+        }
+        for (int j=0; j<gd.jcells; ++j)
+            for (int i=0; i<gd.icells; ++i)
+            {
+                const int ij = i + j*jj;
+                const TF zs = std::max(dem[ij], gd.zh[gd.kstart]);
+                int k = gd.kstart;
+                while (k < gd.kend-1 && gd.zh[k+1] <= zs)
+                    ++k;
+                const TF f = std::min((zs - gd.zh[k]) / (gd.zh[k+1] - gd.zh[k]), TF(1));
+                out[ij] = std::exp((TF(1)-f)*std::log(base_ph_ref[k])
+                                   + f*std::log(base_ph_ref[k+1]));
+            }
+        return true;
+    }
+
+    // ---- cloud cover ----------------------------------------------------------
+    // 1 where any air cell of the column holds condensate, 0 elsewhere; as an
+    // interval mean ([IB] mean_crosslist) the fraction of the time.
+    if (name == "cloud_cover_ib")
+    {
+        if (cloud_cover_now.size() == size_t(gd.ijcells))
+            std::copy(cloud_cover_now.begin(), cloud_cover_now.end(), out);
+        return true;
+    }
+
+    // ---- the resolved wind at diag_z_mom above the local surface ---------------
+    // Linear between the two levels around z_s + diag_z_mom, never below the
+    // first air level, u and v at the cell centre: the resolved flow, where
+    // u_10m_ib is the Monin-Obukhov extrapolation from the first cell.
+    if (name == "u_10m_res_ib" || name == "v_10m_res_ib"
+            || name == "wspd_10m_res_ib" || name == "wdir_10m_res_ib")
+    {
+        const TF* const uf = fields.mp.at("u")->fld.data();
+        const TF* const vf = fields.mp.at("v")->fld.data();
+        for (int j=gd.jstart; j<gd.jend; ++j)
+            for (int i=gd.istart; i<gd.iend; ++i)
+            {
+                const int ij = i + j*jj;
+                const TF zt = dem[ij] + diag_z_mom;
+                int k0 = std::max(int(k_dem[ij]), gd.kstart);
+                while (k0+1 < gd.kend && gd.z[k0+1] <= zt)
+                    ++k0;
+                const int k1 = std::min(k0+1, gd.kend-1);
+                TF f = TF(0);
+                if (k1 > k0)
+                    f = std::min(std::max((zt - gd.z[k0]) / (gd.z[k1] - gd.z[k0]),
+                                          TF(0)), TF(1));
+                const int ijk0 = ij + k0*gd.ijcells;
+                const int ijk1 = ij + k1*gd.ijcells;
+                const TF uc = (TF(1)-f)*TF(0.5)*(uf[ijk0] + uf[ijk0+ii])
+                            + f*TF(0.5)*(uf[ijk1] + uf[ijk1+ii]);
+                const TF vc = (TF(1)-f)*TF(0.5)*(vf[ijk0] + vf[ijk0+jj])
+                            + f*TF(0.5)*(vf[ijk1] + vf[ijk1+jj]);
+                if (name == "u_10m_res_ib")
+                    out[ij] = uc;
+                else if (name == "v_10m_res_ib")
+                    out[ij] = vc;
+                else if (name == "wspd_10m_res_ib")
+                    out[ij] = std::sqrt(uc*uc + vc*vc);
+                else
+                    out[ij] = wind_from_deg(uc, vc);
+            }
+        boundary_cyclic.exec_2d(out);
+        return true;
+    }
+
     // ---- the IB canopy: already one value per column -----------------------
     // No face selector applies - these live on the
     // column, not on a face - so _floor and _wall are accepted and ignored.
@@ -6414,6 +6585,14 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
         {"seb_class_ib",   "-",        "IB surface class: 0 ice (prescribed), 1 land, 2 water"},
         {"sw_dn_ib",       "W m-2",    "downward shortwave radiation at the IB surface"},
         {"lw_dn_ib",       "W m-2",    "downward longwave radiation at the IB surface"},
+        {"sw_up_ib",       "W m-2",    "upward shortwave radiation at the IB surface"},
+        {"lw_up_ib",       "W m-2",    "upward longwave radiation at the IB surface"},
+        {"u_10m_res_ib",   "m s-1",    "resolved u at diag_z_mom above the IB, interpolated"},
+        {"v_10m_res_ib",   "m s-1",    "resolved v at diag_z_mom above the IB, interpolated"},
+        {"wspd_10m_res_ib","m s-1",    "resolved wind speed at diag_z_mom above the IB"},
+        {"wdir_10m_res_ib","degrees",  "resolved wind direction (from) at diag_z_mom above the IB"},
+        {"ps_ib",          "Pa",       "base-state pressure at the IB surface"},
+        {"cloud_cover_ib", "-",        "1 where the column holds condensate above cloud_cover_qc_min"},
         {"z0m_ib",         "m",        "IB momentum roughness length"},
         {"dn_ib",          "m",        "IB wall distance used by MOST"},
         {"z0h_ib",         "m",        "IB heat roughness length"},
@@ -6437,13 +6616,21 @@ void Immersed_boundary<TF>::create_column(Column<TF>& column)
     // Say in the file what the number is.
     auto accum_note = [&](const std::string& nm)
     {
-        return (sw_flux_accum && is_flux_accum_name(nm))
+        return (sw_flux_accum && sw_flux_accum_column && is_flux_accum_name(nm))
             ? std::string(" (mean over the column sampletime before the output time)")
             : std::string("");
     };
 
     for (const std::string& s : columnlist)
     {
+        // A profile, not a time series: the SGS TKE (calc_sgs_tke).
+        if (s == "sgs_tke")
+        {
+            column.add_prof("sgs_tke", "SGS TKE: the prognostic sgstke with tke2, "
+                            "(K_m / (c_m Delta))^2 from the eddy viscosity with smag2",
+                            "m2 s-2", "z");
+            continue;
+        }
         bool found = false;
         for (const auto& e : known)
             if (s == e.name)
@@ -6550,6 +6737,12 @@ void Immersed_boundary<TF>::exec_column(Column<TF>& column, Thermo<TF>& thermo)
     auto tmp = fields.get_tmp();
     for (const std::string& s : columnlist)
     {
+        if (s == "sgs_tke")
+        {
+            calc_sgs_tke(tmp->fld.data());
+            column.calc_column("sgs_tke", tmp->fld.data(), TF(0));
+            continue;
+        }
         std::fill(tmp->flux_bot.begin(), tmp->flux_bot.end(), TF(0));
         // The interval mean, if there is one.
         if (get_flux_accum(s, false, tmp->flux_bot.data())
@@ -6594,10 +6787,12 @@ bool Immersed_boundary<TF>::get_flux_accum(
     // The interval mean prepared by exec_flux_accum for this output. False
     // (and the caller falls back to the instantaneous value) when the
     // switch is off, the name is not accumulated, or nothing is prepared.
-    if (!sw_flux_accum)
+    if (!sw_flux_accum && mean_crosslist.empty())
         return false;
     auto it = flux_accum.find(name);
     if (it == flux_accum.end())
+        return false;
+    if (!for_cross && it->second.cross_only)
         return false;
     const std::vector<TF>& src = for_cross ? it->second.out_cross : it->second.out_col;
     auto& gd = grid.get_grid_data();
@@ -6936,7 +7131,7 @@ void Immersed_boundary<TF>::exec_flux_accum(
        instantaneous value. The sums are not restart fields: after a
        restart the first interval starts at the restart time, which is
        exact when restarts fall on output times. */
-    if (sw_ib == IB_type::Disabled || !sw_flux_accum)
+    if (sw_ib == IB_type::Disabled || (!sw_flux_accum && mean_crosslist.empty()))
         return;
 
     auto& gd = grid.get_grid_data();
@@ -6945,29 +7140,49 @@ void Immersed_boundary<TF>::exec_flux_accum(
     if (!flux_accum_built)
     {
         flux_accum_built = true;
-        std::vector<std::string> names;
-        for (const std::string& s : crosslist)
-            if (is_flux_accum_name(s))
-                names.push_back(s);
-        for (const std::string& s : columnlist)
-            if (is_flux_accum_name(s))
-                names.push_back(s);
-        for (const std::string& s : names)
-            if (flux_accum.find(s) == flux_accum.end())
+        // name, cross_only
+        std::vector<std::pair<std::string, bool>> names;
+        auto in_crosslist = [&](const std::string& s)
+        {
+            return std::find(crosslist.begin(), crosslist.end(), s) != crosslist.end();
+        };
+        if (sw_flux_accum)
+        {
+            for (const std::string& s : crosslist)
+                if (is_flux_accum_name(s))
+                    names.emplace_back(s, !sw_flux_accum_column);
+            if (sw_flux_accum_column)
+                for (const std::string& s : columnlist)
+                    if (is_flux_accum_name(s))
+                        names.emplace_back(s, false);
+        }
+        for (const std::string& s : mean_crosslist)
+            if (in_crosslist(s))
+                names.emplace_back(s, true);
+        for (const auto& nm : names)
+        {
+            auto it = flux_accum.find(nm.first);
+            if (it == flux_accum.end())
             {
                 Flux_accum fa;
                 fa.sum.assign(gd.ijcells, TF(0));
                 fa.sum_cross.assign(gd.ijcells, TF(0));
                 fa.sum_col.assign(gd.ijcells, TF(0));
-                flux_accum.emplace(s, fa);
+                fa.cross_only = nm.second;
+                flux_accum.emplace(nm.first, fa);
             }
+            else
+                // a column name as well: the column gets its mean too
+                it->second.cross_only = it->second.cross_only && nm.second;
+        }
         accum_time = 0.;
         accum_time_cross = 0.;
         accum_time_col = 0.;
         master.print_message(
-                "IB: sw_flux_accum ON - %d surface flux / drag output(s) are "
-                "means over the output interval (RK%d-weighted sums)\n",
-                int(flux_accum.size()), timeloop.get_rkorder());
+                "IB: sw_flux_accum / mean_crosslist - %d output(s) are "
+                "means over the output interval (RK%d-weighted sums)%s\n",
+                int(flux_accum.size()), timeloop.get_rkorder(),
+                sw_flux_accum_column ? "" : "; the column series stay instantaneous");
         if (!sw_momentum_flux)
             for (auto& fa : flux_accum)
                 if (fa.first.find("_skin_ib") != std::string::npos)
@@ -7020,7 +7235,8 @@ void Immersed_boundary<TF>::exec_flux_accum(
     if (substep == 0 && timeloop.is_stats_step())
     {
         const unsigned long itime = timeloop.get_itime();
-        do_cross = cross.get_switch() && cross.do_cross(itime);
+        do_cross = cross.get_switch() && cross.do_cross(itime)
+                && ib_cross_due(timeloop.get_time());
         do_col = column.do_column(itime);
     }
 
@@ -7050,7 +7266,7 @@ void Immersed_boundary<TF>::exec_flux_accum(
             if (fa.first.find("tau") == 0)
                 drag_report.push_back(fa.first);
         }
-        if (do_col)
+        if (do_col && !a.cross_only)
             snapshot(a.sum_col, a.out_col, accum_time_col);
 
         const TF w = TF(b * dt);
@@ -7468,12 +7684,24 @@ void Immersed_boundary<TF>::exec_tavg(
 }
 
 template<typename TF>
+bool Immersed_boundary<TF>::ib_cross_due(const double time) const
+{
+    // [IB] cross_sampletime: is `time` (a [cross] output time) one of the IB
+    // cross-section times too?
+    if (!(cross_sampletime_ib > TF(0)))
+        return true;
+    const double n = time / double(cross_sampletime_ib);
+    return std::abs(n - std::round(n)) < 1e-6;
+}
+
+
+template<typename TF>
 void Immersed_boundary<TF>::exec_cross(Cross<TF>& cross, unsigned long iotime)
 {
     auto& gd = grid.get_grid_data();
     TF no_offset = 0.;
 
-    if (cross.get_switch())
+    if (cross.get_switch() && ib_cross_due(double(iotime) * double(iotime_factor)))
     {
         for (auto& s : crosslist)
         {

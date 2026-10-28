@@ -140,6 +140,10 @@ sw_flux_accum=true
 | Section | Key | Default | Recommended | What it does |
 |---|---|---|---|---|
 | `[IB]` | `sw_flux_accum` | false | true | Write the IB fluxes and drag as means over the output interval (output only). |
+| `[IB]` | `sw_flux_accum_column` | true | false | false: the column time series of the fluxes stay instantaneous; the maps keep the means. |
+| `[IB]` | `mean_crosslist` | empty | (state maps) | IB maps of state variables (e.g. `T_2m_ib`, `wspd_10m_res_ib`, `cloud_cover_ib`) also written as interval means. |
+| `[IB]` | `cross_sampletime` | 0 (every cross output) | 600 | The IB maps, and their means, only every this many seconds (a multiple of `[cross] sampletime`), so vertical planes can be written more often [s]. |
+| `[IB]` | `cloud_cover_qc_min` | 0 | 0 | Condensate (ql + qi) above which a cell is cloud for `cloud_cover_ib` [kg kg-1]. |
 | `[IB]` | `sw_tf_cross` | false | true | Terrain-following xy cross-sections <var>_tf<h>. |
 | `[IB]` | `tf_cross_heights` | empty | 5,10,20,50 | Heights above the local surface of those planes [m]. |
 | `[IB]` | `tavg_interval` | 0 | (output interval) | Time statistics on terrain-following planes over this interval [s] (0 = off; needs swcross). |
@@ -148,6 +152,19 @@ sw_flux_accum=true
 | `[IB]` | `columnlist` | empty | (as needed) | IB variables written as column output. |
 | `[IB]` | `diag_z_mom` | 10 | 10 | Height of the terrain-following wind diagnostics [m]. |
 | `[IB]` | `diag_z_scalar` | 2 | 2 | Height of the terrain-following scalar diagnostics [m]. |
+
+### Surface diagnostics added on 28 Oct 2026
+
+Names for `[cross] crosslist` (maps) and `[IB] columnlist` (time series).
+They are output only and do not change the simulation.
+
+| Name | Unit | What it is |
+|---|---|---|
+| `u_10m_res_ib`, `v_10m_res_ib`, `wspd_10m_res_ib`, `wdir_10m_res_ib` | m s-1, degrees | The resolved wind at `diag_z_mom` above the local surface, interpolated linearly between the two levels around it (never below the first air level), at the cell centre. `u_10m_ib` is instead the Monin-Obukhov extrapolation from the first air cell. |
+| `sw_up_ib`, `lw_up_ib` | W m-2 | Upward short- and longwave radiation at the IB surface (RRTMGP, `[radiation] sw_ib_columns`). |
+| `ps_ib` | Pa | Base-state (hydrostatic) pressure at the surface height, log-linear between half levels; follows `swupdatebasestate`. |
+| `cloud_cover_ib` | - | 1 where an air cell of the column holds more than `cloud_cover_qc_min` of condensate; as an interval mean (`mean_crosslist`) the fraction of time with cloud. |
+| `sgs_tke` (in `[IB] columnlist`) | m2 s-2 | A profile: the prognostic SGS TKE with `tke2`, or (K_m / (c_m Δ))² from the eddy viscosity with `smag2`, as `calc_sgs_tke` (Deardorff 1980). |
 
 ### Lateral boundaries
 
@@ -180,6 +197,7 @@ sw_flux_accum=true
 
 ## References
 
+* Deardorff, J. W. (1980). Stratocumulus-capped mixed layers derived from a three-dimensional model. *Boundary-Layer Meteorol.*, 18, 495-527. https://doi.org/10.1007/BF00119502
 * Andreas, E. L. (1987). A theory for the scalar roughness and the scalar transfer coefficients over snow and sea ice. *Boundary-Layer Meteorol.*, 38, 159-184. https://doi.org/10.1007/BF00121562
 * Andren, A., Brown, A. R., Graf, J., Mason, P. J., Moeng, C.-H., Nieuwstadt, F. T. M. and Schumann, U. (1994). Large-eddy simulation of a neutrally stratified boundary layer: a comparison of four computer codes. *Q. J. R. Meteorol. Soc.*, 120, 1457-1484. https://doi.org/10.1002/qj.49712052003
 * Axelsen, S. L. and van Dop, H. (2009). Large-eddy simulation of katabatic winds. Part 1: Comparison with observations. *Acta Geophysica*, 57, 803-836. https://doi.org/10.2478/s11600-009-0041-6
