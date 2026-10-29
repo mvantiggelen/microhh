@@ -213,6 +213,43 @@ horizontal and vertical lengths in K and in the dissipation, as WRF's 1.5-order 
 `mix_isotropic=0`, Skamarock et al. 2019, and the formulations compared by Simon and Chow 2021;
 see also Scotti et al. 1993 for the length scale on anisotropic grids) is not implemented.
 
+### Upstream merge of 29 Oct 2026: weight of precipitation in the buoyancy
+
+`pr_openbc_ib` now contains upstream `develop` up to 726db10e (PR #372), so a
+pull request into `develop` merges without conflicts. What comes in:
+
+| Upstream PR | Change | Effect on our runs |
+|---|---|---|
+| #372 | The buoyancy carries the weight of the precipitation: \(\theta_v = \theta\,[1 - (1 - R_v/R_d)\,q_t - (R_v/R_d)(q_l + q_i) - q_{hm}]\), with \(q_{hm} = q_r + q_s + q_g\) (nsw6) or \(q_r\) (2mom_warm). Always on; no key. | Weaker updrafts where precipitation is heavy. Meant to stop the run-away graupel column of case002/case003 dom0 (w equal to the graupel fall speed, no drag from the load); to be confirmed on Atos. |
+| #371 | nsw6: deposition onto snow and graupel now reaches qt and thl; collisions and melting follow the temperature (SCALE table). | Different ice-phase budgets. |
+| #370 | esat over water is the Arden Buck exponential itself instead of its Taylor expansion; limit −100 °C. | Round-off-level change (bomex: ql differs by 1e-14). |
+| #368 | Ice effective radius in RRTMGP gets the log-normal factor exp((ln 1.34)²). | Ice clouds 9 % larger r<sub>e</sub>. |
+| #369 | `[limiter] cliplist`: hard clip to zero after each step. | Not set by the generator. |
+| #354, #363 | Faster flux-limited advection. | Bit-identical. |
+
+How the fork's own code takes the loading:
+
+* `calc_buoyancy_tend_2nd`, `calc_buoyancy`, `calc_buoyancy_h`, `calc_thv`
+  (with and without `swphydro_3d`): \(q_{hm}\), interpolated to the half
+  level for w.
+* `calc_phydro_3d` and `calc_cape`: no loading, like the base state.
+* nsw6 with `swphydro_3d`: the new vapour tendencies use the local Exner
+  function.
+* `[radiation] t_sfc` is no longer read; the generator no longer writes it.
+
+Tests (CPU, `-ffp-contract=off`, against the binary before the merge):
+drycblles, drycblles_tke2, gabls1, ib_sine and the seven IB/LBC cases
+(Andren, Maass, Axelsen LBC and rotated, Fedorovich B13, idealised
+katabatic) bit-identical; bomex differs by round-off (esat).
+
+Loading test (Weisman-Klemp supercell, nsw6, 96 x 96 x 96 at 800 m x 200 m,
+1 h, before and after the merge): in every unsaturated cell with
+precipitation the dumped b equals g(θ<sub>v</sub> − θ<sub>v,ref</sub>)/θ<sub>v,ref</sub> with the
+loading (θ<sub>v,ref</sub> recovered per level to 2e-13 K; 2.5 K off without
+it), and before the merge it matched the formula without it. The storm
+responds as expected: peak w 68.9 → 62.3 m/s, w at 1 h 55.7 → 48.1 m/s,
+total hydrometeor mass at 1 h 20 % lower.
+
 ### Lateral boundaries
 
 | Section | Key | Default | Recommended | What it does |
@@ -248,6 +285,7 @@ see also Scotti et al. 1993 for the length scale on anisotropic grids) is not im
 * Andreas, E. L. (1987). A theory for the scalar roughness and the scalar transfer coefficients over snow and sea ice. *Boundary-Layer Meteorol.*, 38, 159-184. https://doi.org/10.1007/BF00121562
 * Andren, A., Brown, A. R., Graf, J., Mason, P. J., Moeng, C.-H., Nieuwstadt, F. T. M. and Schumann, U. (1994). Large-eddy simulation of a neutrally stratified boundary layer: a comparison of four computer codes. *Q. J. R. Meteorol. Soc.*, 120, 1457-1484. https://doi.org/10.1002/qj.49712052003
 * Axelsen, S. L. and van Dop, H. (2009). Large-eddy simulation of katabatic winds. Part 1: Comparison with observations. *Acta Geophysica*, 57, 803-836. (DOI not verified: 10.2478/s11600-009-0041-6)
+* Bryan, G. H. and Fritsch, J. M. (2002). A benchmark simulation for moist nonhydrostatic numerical models. *Mon. Wea. Rev.*, 130, 2917-2928. https://doi.org/10.1175/1520-0493(2002)130<2917:ABSFMN>2.0.CO;2
 * Businger, J. A., Wyngaard, J. C., Izumi, Y. and Bradley, E. F. (1971). Flux-profile relationships in the atmospheric surface layer. *J. Atmos. Sci.*, 28, 181-189. (DOI not verified: 10.1175/1520-0469(1971)028<0181:FPRITA>2.0.CO;2)
 * Davies, H. C. (1976). A lateral boundary formulation for multi-level prediction models. *Q. J. R. Meteorol. Soc.*, 102, 405-418. (DOI not verified: 10.1002/qj.49710243210)
 * Fedorovich, E., Gibbs, J. A. and Shapiro, A. (2017). Numerical study of nocturnal low-level jets over gently sloping terrain. *J. Atmos. Sci.*, 74, 2813-2834. https://doi.org/10.1175/JAS-D-17-0013.1
