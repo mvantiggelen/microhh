@@ -105,6 +105,8 @@ class Thermo
         // only. Thermo types without an updated base state ignore it.
         virtual void set_basestate_air_levels(const std::vector<unsigned int>&) {}
 
+        virtual std::vector<std::string>& get_hydrometeorlist() = 0;
+
         #ifdef USECUDA
         // GPU functions and variables.
         virtual void prepare_device() = 0;

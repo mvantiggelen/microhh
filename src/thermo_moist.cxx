@@ -79,9 +79,11 @@ namespace
             TF* restrict wt,
             const TF* restrict thl,
             const TF* restrict qt,
+            const TF* restrict qhm,
             const TF* restrict ph,
             TF* restrict thlh,
             TF* restrict qth,
+            TF* restrict qhmh,
             TF* restrict ql,
             TF* restrict qi,
             const TF* restrict thvrefh,
@@ -104,6 +106,7 @@ namespace
 
                     thlh[ij] = interp2(thl[ijk-kk], thl[ijk]);
                     qth[ij]  = interp2(qt[ijk-kk], qt[ijk]);
+                    qhmh[ij]  = interp2(qhm[ijk-kk], qhm[ijk]);
                 }
 
             if constexpr (!swphydro_3d)
@@ -141,7 +144,7 @@ namespace
                     if constexpr (swphydro_3d)
                         exnh_loc = exner(ph[ijk]);
 
-                    wt[ijk] += buoyancy(exnh_loc, thlh[ij], qth[ij], ql[ij], qi[ij], thvrefh[k]);
+                    wt[ijk] += buoyancy(exnh_loc, thlh[ij], qth[ij], ql[ij], qi[ij], thvrefh[k], qhmh[ij]);
                 }
         }
     }
@@ -269,6 +272,7 @@ namespace
             TF* restrict b,
             TF* restrict thl,
             TF* restrict qt,
+            TF* restrict qhm,
             TF* restrict p,
             TF* restrict ql,
             TF* restrict qi,
@@ -317,6 +321,7 @@ namespace
                         const int ijk  = i + j*jj+k*kk;
                         ql[ijk] = 0.;
                         qi[ijk] = 0.;
+                        qhm[ijk] = 0.;
                     }
 
             }
@@ -330,7 +335,7 @@ namespace
                     if constexpr (swphydro_3d)
                         exn_loc = exner(p[ijk]);
 
-                    b[ijk] = buoyancy(exn_loc, thl[ijk], qt[ijk], ql[ijk], qi[ijk], thvref[k]);
+                    b[ijk] = buoyancy(exn_loc, thl[ijk], qt[ijk], ql[ijk], qi[ijk], thvref[k], qhm[ijk]);
                 }
         }
     }
@@ -341,10 +346,12 @@ namespace
             TF* restrict bh,
             const TF* restrict thl,
             const TF* restrict qt,
+            const TF* restrict qhm,
             const TF* restrict ph,
             const TF* restrict thvrefh,
             TF* restrict thlh,
             TF* restrict qth,
+            TF* restrict qhmh,
             TF* restrict ql,
             TF* restrict qi,
             const int istart, const int iend,
@@ -375,6 +382,7 @@ namespace
 
                         thlh[ij] = interp2(thl[ijk-kk], thl[ijk]);
                         qth[ij]  = interp2(qt[ijk-kk], qt[ijk]);
+                        qhmh[ij]  = interp2(qhm[ijk-kk], qhm[ijk]);
                     }
 
                 for (int j=jstart; j<jend; j++)
@@ -404,6 +412,7 @@ namespace
                         const int ij  = i + j*jj;
                         ql[ij] = 0.;
                         qi[ij] = 0.;
+                        qhmh[ij] = 0.;
                     }
             }
             for (int j=jstart; j<jend; j++)
@@ -416,7 +425,7 @@ namespace
                     if constexpr (swphydro_3d)
                         exnh_loc = exner(ph[ijk]);
 
-                    bh[ijk] = buoyancy(exnh_loc, thlh[ij], qth[ij], ql[ij], qi[ij], thvrefh[k]);
+                    bh[ijk] = buoyancy(exnh_loc, thlh[ij], qth[ij], ql[ij], qi[ij], thvrefh[k], qhmh[ij]);
                 }
         }
     }
@@ -427,6 +436,7 @@ namespace
             TF* const restrict thv,
             const TF* const restrict thl,
             const TF* const restrict qt,
+            const TF* const restrict qhm,
             const TF* const restrict p,
             const int istart, const int iend,
             const int jstart, const int jend,
@@ -482,7 +492,7 @@ namespace
                     }
 
                     Struct_sat_adjust<TF> ssa = sat_adjust(thl[ijk], qt[ijk], p_loc, exn_loc);
-                    thv[ijk] = virtual_temperature(exn_loc, thl[ijk], qt[ijk], ssa.ql, ssa.qi);
+                    thv[ijk] = virtual_temperature(exn_loc, thl[ijk], qt[ijk], ssa.ql, ssa.qi, qhm[ijk]);
                 }
         }
     }
@@ -1245,7 +1255,7 @@ namespace
 
                 const TF exh = exner(phydroh[ijk]);
                 Struct_sat_adjust<TF> ssa = sat_adjust(thlh, qth, phydroh[ijk], exh);
-                const TF thvh = virtual_temperature(exh, thlh, qth, ssa.ql, ssa.qi);
+                const TF thvh = virtual_temperature(exh, thlh, qth, ssa.ql, ssa.qi, TF(0));
 
                 // Advance pressure from half (TOD) to full level.
                 phydro[ijk-kk] = phydroh[ijk] * std::exp(grav<TF> * TF(0.5) * dzh[kend] / (Rd<TF> * exh * thvh));
@@ -1262,7 +1272,7 @@ namespace
                     // Calculate full level virtual potential temperature.
                     const TF ex = exner(phydro[ijk]);
                     Struct_sat_adjust<TF> ssaf = sat_adjust(thl[ijk], qt[ijk], phydro[ijk], ex);
-                    const TF thv = virtual_temperature(ex, thl[ijk], qt[ijk], ssaf.ql, ssaf.qi);
+                    const TF thv = virtual_temperature(ex, thl[ijk], qt[ijk], ssaf.ql, ssaf.qi, TF(0));
 
                     // Advance half level pressure.
                     phydroh[ijk] = phydroh[ijk+kk] * std::exp(grav<TF> * dz[k] / (Rd<TF> * ex * thv));
@@ -1274,7 +1284,7 @@ namespace
                     const TF qth  = TF(0.5) * (qt [ijk-kk] + qt [ijk]);
 
                     Struct_sat_adjust<TF> ssah = sat_adjust(thlh, qth, phydroh[ijk], exh);
-                    const TF thvh = virtual_temperature(exh, thlh, qth, ssah.ql, ssah.qi);
+                    const TF thvh = virtual_temperature(exh, thlh, qth, ssah.ql, ssah.qi, TF(0));
 
                     // Advance full level pressure.
                     phydro[ijk-kk] = phydro[ijk] * std::exp(grav<TF> * dzh[k] / (Rd<TF> * exh * thvh));
@@ -1342,8 +1352,8 @@ namespace
                     Struct_sat_adjust<TF> ssa_e = sat_adjust(thl[ijk], qt[ijk], p_loc, exn_loc);
                     Struct_sat_adjust<TF> ssa_p = sat_adjust(thl[ijk0], qt[ijk0], p_loc, exn_loc);
 
-                    const TF thv_e = virtual_temperature(exn_loc, thl[ijk],  qt[ijk],  ssa_e.ql, ssa_e.qi);
-                    const TF thv_p = virtual_temperature(exn_loc, thl[ijk0], qt[ijk0], ssa_p.ql, ssa_p.qi);
+                    const TF thv_e = virtual_temperature(exn_loc, thl[ijk],  qt[ijk],  ssa_e.ql, ssa_e.qi, TF(0));
+                    const TF thv_p = virtual_temperature(exn_loc, thl[ijk0], qt[ijk0], ssa_p.ql, ssa_p.qi, TF(0));
 
                     const TF b_p = Constants::grav<TF> * (thv_p - thv_e) / thv_e;
 
@@ -1839,6 +1849,23 @@ void Thermo_moist<TF>::exec(const double dt, Stats<TF>& stats)
     // Re-calculate hydrostatic pressure and exner, pass dummy as thvref to prevent overwriting base state
     auto tmp = fields.get_tmp();
 
+    // calculate sum of hydrometeors
+    auto qhm = fields.get_tmp();
+    std::fill(qhm->fld.begin(), qhm->fld.end(), TF(0));
+
+    for (const std::string& qhm_name : hydrometeorlist)
+    {
+        auto it = fields.sp.find(qhm_name);
+        add_hydrometeor(
+                qhm->fld.data(),
+                it->second->fld.data(),
+                gd.istart, gd.iend,
+                gd.jstart, gd.jend,
+                gd.kstart, gd.kend,
+                gd.icells, gd.ijcells
+        );
+    }
+
     if (bs.swupdatebasestate)
     {
         calc_basestate_air_means();
@@ -1883,9 +1910,11 @@ void Thermo_moist<TF>::exec(const double dt, Stats<TF>& stats)
                 fields.mt.at("w")->fld.data(),
                 fields.sp.at("thl")->fld.data(),
                 fields.sp.at("qt")->fld.data(),
+                qhm->fld.data(),
                 ph.data(),
                 &tmp->fld[0*gd.ijcells],
                 &tmp->fld[1*gd.ijcells],
+                &tmp->fld[4*gd.ijcells],
                 &tmp->fld[2*gd.ijcells],
                 &tmp->fld[3*gd.ijcells],
                 bs.thvrefh.data(),
@@ -1901,6 +1930,7 @@ void Thermo_moist<TF>::exec(const double dt, Stats<TF>& stats)
         buoyancy_tend_wrapper.template operator()<false>(bs.prefh);
 
     fields.release_tmp(tmp);
+    fields.release_tmp(qhm);
 
     stats.calc_tend(*fields.mt.at("w"), tend_name);
 }
@@ -2089,6 +2119,26 @@ void Thermo_moist<TF>::get_thermo_field(
     else
         base = bs;
 
+    // calculate sum of hydrometeors
+    auto qhm = fields.get_tmp();
+    std::fill(qhm->fld.begin(), qhm->fld.end(), TF(0));
+
+    if (name == "b" || name == "b_h" || name == "thv")
+    {
+        for (const std::string& qhm_name : hydrometeorlist)
+        {
+            auto it = fields.sp.find(qhm_name);
+            add_hydrometeor(
+                    qhm->fld.data(),
+                    it->second->fld.data(),
+                    gd.istart, gd.iend,
+                    gd.jstart, gd.jend,
+                    gd.kstart, gd.kend,
+                    gd.icells, gd.ijcells
+                    );
+        }
+    }
+
     // BvS: get_thermo_field() is called from subgrid-model, before thermo(), so re-calculate the hydrostatic pressure
     // Pass dummy as rhoref,bs.thvref to prevent overwriting base state
     if (bs.swupdatebasestate)
@@ -2145,6 +2195,7 @@ void Thermo_moist<TF>::get_thermo_field(
                     fld.fld.data(),
                     fields.sp.at("thl")->fld.data(),
                     fields.sp.at("qt")->fld.data(),
+                    qhm->fld.data(),
                     p.data(),
                     tmp->fld.data(),
                     tmp2->fld.data(),
@@ -2174,10 +2225,12 @@ void Thermo_moist<TF>::get_thermo_field(
                     fld.fld.data(),
                     fields.sp.at("thl")->fld.data(),
                     fields.sp.at("qt")->fld.data(),
+                    qhm->fld.data(),
                     ph.data(),
                     base.thvrefh.data(),
                     &tmp->fld[0*gd.ijcells],
                     &tmp->fld[1*gd.ijcells],
+                    &tmp->fld[4*gd.ijcells],
                     &tmp->fld[2*gd.ijcells],
                     &tmp->fld[3*gd.ijcells],
                     gd.istart, gd.iend,
@@ -2270,6 +2323,7 @@ void Thermo_moist<TF>::get_thermo_field(
                     fld.fld.data(),
                     fields.sp.at("thl")->fld.data(),
                     fields.sp.at("qt")->fld.data(),
+                    qhm->fld.data(),
                     p.data(),
                     gd.istart, gd.iend,
                     gd.jstart, gd.jend,
@@ -2311,6 +2365,8 @@ void Thermo_moist<TF>::get_thermo_field(
         std::string error_message = "Can not get thermo field: \"" + name + "\"";
         throw std::runtime_error(error_message);
     }
+
+    fields.release_tmp(qhm);
 
     if (cyclic)
         boundary_cyclic.exec(fld.fld.data());
