@@ -23,6 +23,8 @@
 #ifndef DIFF_H
 #define DIFF_H
 
+#include <vector>
+
 // forward declaration to speed up build time
 class Master;
 class Input;
@@ -54,6 +56,15 @@ class Diff
         virtual double get_dn(double) = 0;
 
         static std::shared_ptr<Diff> factory(Master&, Grid<TF>&, Fields<TF>&, Boundary<TF>&, Input&);
+
+        // Surface cells of an immersed boundary, for a closure that treats the
+        // first air cell above the terrain as it treats the first level above
+        // the domain floor. The default ignores them.
+        virtual void set_ib_wall_mason(
+                const std::vector<int>&, const std::vector<TF>&, const std::vector<TF>&) {}
+        virtual void set_ib_wall_gradients(
+                const std::vector<int>&, const std::vector<TF>&,
+                const std::vector<TF>&, const std::vector<TF>&) {}
 
         #ifdef USECUDA
         // GPU functions and variables

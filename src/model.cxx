@@ -445,6 +445,7 @@ void Model<TF>::exec()
                 fields->exec();
 
                 // Get the viscosity to be used in diffusion.
+                ib->exec_tke2_wall(*diff);
                 diff->exec_viscosity(*stats, *thermo);
                 ib->exec_strain_most();
 

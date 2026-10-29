@@ -39,6 +39,7 @@ template<typename> class Column;
 template<typename> class Thermo;
 template<typename> class Stats;
 template<typename> class Radiation;
+template<typename> class Diff;
 class Netcdf_handle;
 
 enum class IB_type {Disabled, DEM, User};
@@ -181,6 +182,7 @@ class Immersed_boundary
         void exec_vegetation(Thermo<TF>&, Radiation<TF>&);
         void exec_momentum_flux(Stats<TF>&);
         void exec_strain_most();
+        void exec_tke2_wall(Diff<TF>&);  ///< [IB] sw_tke2_wall, sw_mason_wall with tke2
 
         void exec_impermeable();
         // Net mass flux from the terrain into the air through the floor and
@@ -319,6 +321,17 @@ class Immersed_boundary
         TF mason_z0_floor;            // [boundary] z0m, what Diff_smag2 used
         std::vector<TF> mason_f_h;    // factor on evisc (iso) or evisc_h (aniso)
         std::vector<TF> mason_f_v;    // factor on evisc_v (aniso)
+
+        // tke2: the first air cell above each floor face gets the MOST
+        // shear and db/dz, and Mason uses the distance to the IB surface.
+        bool sw_tke2_wall;
+        bool tke2_wall_built;
+        std::vector<int> tke2_wall_m;     // floor face per cell
+        std::vector<int> tke2_wall_ijk;   // its first air cell
+        std::vector<int> tke2_send_ijk;   // cells with a wall model value this substep
+        std::vector<TF> tke2_send_dudz;
+        std::vector<TF> tke2_send_dvdz;
+        std::vector<TF> tke2_send_dbdz;
         void build_mason_wall();
         std::vector<TF> sgs_tke_g;    // e = (K g)^2 per cell
 

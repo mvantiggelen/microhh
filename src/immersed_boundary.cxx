@@ -46,6 +46,7 @@
 #include "thermo_moist_functions.h"  // sat_adjust/esat, for the IB canopy
 #include "radiation.h"               // surface SW down, for f1
 #include "netcdf_interface.h"        // the soil group of the case input
+#include "diff.h"                    // [IB] sw_tke2_wall hands tke2 its wall cells
 
 namespace
 {
@@ -1818,6 +1819,19 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
             mason_mlen0_v = aniso_m ? inputin.get_item<TF>("diff", "mlen0_v", "") : TF(0);
             mason_z0_floor = inputin.get_item<TF>("boundary", "z0m", "", TF(0));
         }
+        // [IB] sw_tke2_wall: in the first air cell above each floor face,
+        // tke2 takes its vertical shear and db/dz from the wall model, as it
+        // does at the first level above the domain floor.
+        sw_tke2_wall = inputin.get_item<bool>("IB", "sw_tke2_wall", "", false);
+        tke2_wall_built = false;
+        if (sw_tke2_wall && sgs_kind != 2)
+            throw std::runtime_error(
+                    "[IB] sw_tke2_wall is for [diff] swdiff=tke2 only");
+        if (sw_tke2_wall && sw_wall_model == IB_wall_type::Disabled)
+            throw std::runtime_error(
+                    "[IB] sw_tke2_wall needs a wall model ([IB] sw_wall_model): "
+                    "the shear and db/dz come from its u* and L");
+
         strain_most_min = inputin.get_item<TF>(
                 "IB", "strain_most_min", "", TF(0.05));
         strain_most_reported = false;
@@ -3894,6 +3908,151 @@ void Immersed_boundary<TF>::cap_evisc_solid(
         if (exchange)
             boundary_cyclic.exec(evisc);
     }
+}
+
+template<typename TF>
+void Immersed_boundary<TF>::exec_tke2_wall(Diff<TF>& diff)
+{
+    /* tke2 treats the first level above the DOMAIN FLOOR as a surface cell:
+       the vertical shear in S2 and N2 come from Monin-Obukhov, and Mason's
+       length uses the height above that floor. Over IB terrain the first air
+       cell is an interior cell, so S2 there uses the no-slip ghost below and
+       Mason the height above the domain floor. This hands Diff_tke2
+
+       - with [IB] sw_mason_wall, once: every air cell over terrain with its
+         distance d to the IB surface (as build_mason_wall; the wall-normal
+         distance of the face for the first air cell) and the IB z0m;
+       - with [IB] sw_tke2_wall, every substep: per first air cell above a
+         floor face, du/dz = ustar phim (u/U) / (kappa dn), dv/dz likewise,
+         and db/dz = -B phih / (kappa dn ustar) = ustar^2 phih zeta / (kappa dn)^2,
+         with B = -ustar^3 / (kappa L), as boundary_surface_kernels computes them
+         at the domain floor. u* and L are from the previous wall-model call,
+         the same lag as sw_strain_most.
+
+       Called before Diff::exec_viscosity. */
+    if (sw_ib == IB_type::Disabled || sgs_kind != 2)
+        return;
+    if (!sw_tke2_wall && !sw_mason_wall)
+        return;
+
+    auto& gd = grid.get_grid_data();
+    const TF kappa = Constants::kappa<TF>;
+
+    if (!tke2_wall_built)
+    {
+        tke2_wall_built = true;
+
+        // One floor face per first air cell. Cells at kstart already are
+        // surface cells for tke2.
+        std::map<int, int> pick;
+        for (int m=0; m<wall.n; ++m)
+        {
+            if (wall.axis[m] != 2 || wall.sign[m] != -1 || wall.k[m] <= gd.kstart)
+                continue;
+            const int ijk = wall.i[m] + wall.j[m]*gd.icells + wall.k[m]*gd.ijcells;
+            if (pick.find(ijk) == pick.end())
+                pick[ijk] = m;
+        }
+        tke2_wall_m.clear();
+        tke2_wall_ijk.clear();
+        for (const auto& kv : pick)
+        {
+            tke2_wall_ijk.push_back(kv.first);
+            tke2_wall_m.push_back(kv.second);
+        }
+
+        int n_mason = 0;
+        if (sw_mason_wall)
+        {
+            std::vector<int> ijk_m;
+            std::vector<TF> d_m;
+            std::vector<TF> z0_m;
+            for (int k=gd.kstart+1; k<gd.kend; ++k)
+            {
+                const TF mlen0 = std::pow(gd.dx*gd.dy*gd.dz[k], TF(1./3.));
+                for (int j=gd.jstart; j<gd.jend; ++j)
+                    for (int i=gd.istart; i<gd.iend; ++i)
+                    {
+                        const int ij  = i + j*gd.icells;
+                        const int ijk = ij + k*gd.ijcells;
+                        if (gd.z[k] - dem[ij] <= TF(0))
+                            continue;
+
+                        TF d = std::max(gd.z[k] - dem[ij], TF(0.5)*gd.dz[k]);
+                        const auto it = pick.find(ijk);
+                        if (it != pick.end())
+                            d = wall.dn[it->second];
+                        const TF z0 = sw_z0m_map ? z0m_map[ij] : z0m_ib;
+
+                        // Far above the surface both lengths are mlen0 to
+                        // within 0.02 %: leave those cells to the kernels.
+                        if (kappa*(d + z0) > TF(50)*mlen0)
+                            continue;
+
+                        ijk_m.push_back(ijk);
+                        d_m.push_back(d);
+                        z0_m.push_back(z0);
+                    }
+            }
+            n_mason = int(ijk_m.size());
+            diff.set_ib_wall_mason(ijk_m, d_m, z0_m);
+        }
+
+        int n_wall = int(tke2_wall_ijk.size());
+        master.sum(&n_mason, 1);
+        master.sum(&n_wall, 1);
+        master.print_message(
+                "IB: tke2 over the terrain - Mason with the distance to the IB "
+                "surface in %d air cell(s) (sw_mason_wall %s); MOST shear and "
+                "db/dz in %d first air cell(s) (sw_tke2_wall %s)\n",
+                n_mason, sw_mason_wall ? "ON" : "off",
+                sw_tke2_wall ? n_wall : 0, sw_tke2_wall ? "ON" : "off");
+    }
+
+    if (!sw_tke2_wall)
+        return;
+
+    const TF* const restrict u = fields.mp.at("u")->fld.data();
+    const TF* const restrict v = fields.mp.at("v")->fld.data();
+
+    tke2_send_ijk.clear();
+    tke2_send_dudz.clear();
+    tke2_send_dvdz.clear();
+    tke2_send_dbdz.clear();
+
+    for (size_t n=0; n<tke2_wall_ijk.size(); ++n)
+    {
+        const int m = tke2_wall_m[n];
+        const TF us = wall.ustar[m];
+        if (!(us > TF(0)))
+            continue;                       // before the first exec_wall_model
+
+        // zeta bounded as the surface solver does, L taken from it.
+        const TF zsl  = wall.dn[m];
+        const TF zeta = std::min(std::max(zsl / wall.obuk[m],
+                                          Constants::zL_min<TF>),
+                                 Constants::zL_max<TF>);
+
+        const int ijk = tke2_wall_ijk[n];
+        const TF uc = TF(0.5)*(u[ijk] + u[ijk+1]);
+        const TF vc = TF(0.5)*(v[ijk] + v[ijk+gd.icells]);
+        const TF uabs = std::sqrt(uc*uc + vc*vc);
+
+        const TF g = us * most::phim(zeta) / (kappa * zsl);
+        const TF dudz = (uabs > TF(Constants::dsmall)) ? g * uc / uabs : TF(0);
+        const TF dvdz = (uabs > TF(Constants::dsmall)) ? g * vc / uabs : TF(0);
+        const TF dbdz = us*us * most::phih(zeta) * zeta / (kappa*kappa * zsl*zsl);
+
+        if (!std::isfinite(dudz) || !std::isfinite(dvdz) || !std::isfinite(dbdz))
+            continue;
+
+        tke2_send_ijk.push_back(ijk);
+        tke2_send_dudz.push_back(dudz);
+        tke2_send_dvdz.push_back(dvdz);
+        tke2_send_dbdz.push_back(dbdz);
+    }
+
+    diff.set_ib_wall_gradients(tke2_send_ijk, tke2_send_dudz, tke2_send_dvdz, tke2_send_dbdz);
 }
 
 template<typename TF>

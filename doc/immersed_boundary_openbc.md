@@ -65,7 +65,7 @@ sw_flux_accum=true
 | `[IB]` | `sw_wall_stability_vertical` | false | false | Stability correction on riser faces as well (else neutral there). |
 | `[IB]` | `sw_momentum_flux` | true with a wall model | true | MOST wall stress applied as a momentum source in the air cells next to the terrain. |
 | `[IB]` | `sw_momentum_flux_vertical` | true | true | Also on riser faces. Forced to false by sw_wall_slope. |
-| `[IB]` | `sw_strain_most` | true with a wall model | true | Rescale the eddy viscosity next to the floor so that K dU/dz = u*^2 (smag2 or tke2 only). |
+| `[IB]` | `sw_strain_most` | true with a wall model | true (false with tke2 and `sw_tke2_wall`) | Rescale the eddy viscosity next to the floor so that K dU/dz = u*^2 (smag2 or tke2 only). With tke2 it rescales K only after the SGS TKE has been computed, so K then no longer equals c_m l √e. |
 | `[IB]` | `sw_strain_most_vertical` | false | false | The same rescaling next to riser faces. |
 | `[IB]` | `strain_most_min` | 0.05 | 0.05 | Lower bound of that rescaling factor. |
 | `[IB]` | `sw_strain_mlen` | true | - | Divide out the Mason damping that Diff_smag2 applied with the height above the domain floor. |
@@ -105,7 +105,8 @@ sw_flux_accum=true
 
 | Section | Key | Default | Recommended | What it does |
 |---|---|---|---|---|
-| `[IB]` | `sw_mason_wall` | false | true | Mason wall damping of the mixing length with the height above the local surface. |
+| `[IB]` | `sw_mason_wall` | false | true | Mason wall damping of the mixing length with the height above the local surface. Applies to smag2, swanisotropic and (since 29 Oct 2026) tke2, where it is done inside `Diff_tke2` for both the eddy viscosity and the dissipation. |
+| `[IB]` | `sw_tke2_wall` | false | true with tke2 | tke2 only: the first air cell above each floor face takes its vertical shear (in S²) and N² from the wall model's u* and L, as tke2 does at the first level above the domain floor. Needs a wall model. |
 | `[IB]` | `evisc_solid` | off | cap_last | Eddy viscosity inside the terrain: off, zero, cap (at the air neighbours, before wall damping) or cap_last (after it). |
 | `[IB]` | `sw_evisc_solid_zero` | false | - | Older spelling of evisc_solid=zero. |
 | `[IB]` | `dn_probe_every` | 0 | 20000 | Repeat the diffusion-number probe every N calls (0 = only once). |
@@ -166,6 +167,52 @@ They are output only and do not change the simulation.
 | `cloud_cover_ib` | - | 1 where an air cell of the column holds more than `cloud_cover_qc_min` of condensate; as an interval mean (`mean_crosslist`) the fraction of time with cloud. |
 | `sgs_tke` (in `[IB] columnlist`) | m2 s-2 | A profile: the prognostic SGS TKE with `tke2`, or (K_m / (c_m Δ))² from the eddy viscosity with `smag2`, as `calc_sgs_tke` (Deardorff 1980). |
 
+### tke2 over the terrain (29 Oct 2026)
+
+MicroHH's tke2 (Deardorff 1980) treats only the first level above the domain floor as a
+surface cell: there the vertical shear in S² and N² come from Monin-Obukhov theory
+(`calc_strain2<Surface_model::Enabled>`, `bgradbot`), and Mason's length uses the height
+above that floor. Above IB terrain the first air cell is an interior cell, so its shear came
+from the no-slip ghost below (∂u/∂z ≈ 2u₁/dz), its N² from the resolved field across the
+wall, and its Mason length from the height above the buried domain floor. `sw_strain_most`
+rescaled K afterwards, but the SGS TKE equation had already used the uncorrected K and S², and
+K is rebuilt from e at every step.
+
+* `[IB] sw_mason_wall=true` now also applies to tke2: `Diff_tke2` computes K_m, K_h and the
+  dissipation of every air cell over terrain with the distance d to the IB surface (the
+  wall-normal distance for the first air cell, max(z − dem, dz/2) above it) and the IB z0m.
+* `[IB] sw_tke2_wall=true`: in the first air cell above each floor face the vertical-shear
+  terms of S² are replaced by ½(∂u/∂z)² + ½(∂v/∂z)² with ∂u/∂z = u* φm(ζ) (u/U) / (κ dn), and
+  N² by ∂b/∂z = u*² φh(ζ) ζ / (κ dn)², exactly as at the domain floor. u* and L are those of the
+  previous wall-model call (the same lag as `sw_strain_most`).
+* Code: `Diff::set_ib_wall_mason` and `Diff::set_ib_wall_gradients` (no-ops except in
+  `Diff_tke2`), called by `Immersed_boundary::exec_tke2_wall` just before
+  `Diff::exec_viscosity`. The tke2 kernels themselves are unchanged; the corrections are applied
+  at the listed cells between them.
+* With both keys off, and for every other closure, results are bit-identical (tested with
+  `-ffp-contract=off`: the 7 IB cases, drycblles, gabls1, bomex, ib_sine, and drycblles with
+  tke2).
+
+Tests, flat IB 4 levels above a buried floor against MicroHH's own surface, both with tke2:
+
+| | e in the first air cells (× reference) | K_m first cell | u* | wind at the first 4 levels (× reference) |
+|---|---|---|---|---|
+| Andrén (1994) Ekman layer, dz 47 m, last hour of 6 h, before | 181, 10, 5.8, 2.7 | 11.4 | +7 % | 1.12, 0.89, 0.90, 0.94 |
+| same, `sw_mason_wall` + `sw_tke2_wall` | 1.7, 1.2, 1.6, 1.4 | 0.24 | +1 % | 0.78, 0.85, 0.92, 0.94 |
+| same, and `sw_strain_most=false` | 1.6, 1.1, 1.5, 1.3 | 1.29 | +1 % | 0.78, 0.84, 0.91, 0.93 |
+| for comparison: smag2 on the flat IB | – | – | −3 % | 0.83, 0.90, 0.92, 0.93 |
+| `axelsen2009_rotated` katabatic jet, dz 1 m, last 15 min of 1 h, before | 20, 1.4, 1.6 | 7.2 | | jet 6.6 vs 8.1 m/s |
+| same, both keys, `sw_strain_most=false` | 1.2, 0.7, 1.1 | 1.04 | | jet 6.2 vs 8.1 m/s |
+
+The near-surface wind deficit that remains is the same as smag2 shows on the IB at this grid,
+so it comes from the IB momentum treatment, not from the closure. Recommended with tke2:
+`sw_mason_wall=true`, `sw_tke2_wall=true`, `sw_strain_most=false`.
+
+tke2 keeps its isotropic filter width Δ = (Δx Δy Δz)^(1/3); an anisotropic version (separate
+horizontal and vertical lengths in K and in the dissipation, as WRF's 1.5-order TKE with
+`mix_isotropic=0`, Skamarock et al. 2019, and the formulations compared by Simon and Chow 2021;
+see also Scotti et al. 1993 for the length scale on anisotropic grids) is not implemented.
+
 ### Lateral boundaries
 
 | Section | Key | Default | Recommended | What it does |
@@ -200,12 +247,15 @@ They are output only and do not change the simulation.
 * Deardorff, J. W. (1980). Stratocumulus-capped mixed layers derived from a three-dimensional model. *Boundary-Layer Meteorol.*, 18, 495-527. https://doi.org/10.1007/BF00119502
 * Andreas, E. L. (1987). A theory for the scalar roughness and the scalar transfer coefficients over snow and sea ice. *Boundary-Layer Meteorol.*, 38, 159-184. https://doi.org/10.1007/BF00121562
 * Andren, A., Brown, A. R., Graf, J., Mason, P. J., Moeng, C.-H., Nieuwstadt, F. T. M. and Schumann, U. (1994). Large-eddy simulation of a neutrally stratified boundary layer: a comparison of four computer codes. *Q. J. R. Meteorol. Soc.*, 120, 1457-1484. https://doi.org/10.1002/qj.49712052003
-* Axelsen, S. L. and van Dop, H. (2009). Large-eddy simulation of katabatic winds. Part 1: Comparison with observations. *Acta Geophysica*, 57, 803-836. https://doi.org/10.2478/s11600-009-0041-6
-* Businger, J. A., Wyngaard, J. C., Izumi, Y. and Bradley, E. F. (1971). Flux-profile relationships in the atmospheric surface layer. *J. Atmos. Sci.*, 28, 181-189. https://doi.org/10.1175/1520-0469(1971)028<0181:FPRITA>2.0.CO;2
-* Davies, H. C. (1976). A lateral boundary formulation for multi-level prediction models. *Q. J. R. Meteorol. Soc.*, 102, 405-418. https://doi.org/10.1002/qj.49710243210
+* Axelsen, S. L. and van Dop, H. (2009). Large-eddy simulation of katabatic winds. Part 1: Comparison with observations. *Acta Geophysica*, 57, 803-836. (DOI not verified: 10.2478/s11600-009-0041-6)
+* Businger, J. A., Wyngaard, J. C., Izumi, Y. and Bradley, E. F. (1971). Flux-profile relationships in the atmospheric surface layer. *J. Atmos. Sci.*, 28, 181-189. (DOI not verified: 10.1175/1520-0469(1971)028<0181:FPRITA>2.0.CO;2)
+* Davies, H. C. (1976). A lateral boundary formulation for multi-level prediction models. *Q. J. R. Meteorol. Soc.*, 102, 405-418. (DOI not verified: 10.1002/qj.49710243210)
 * Fedorovich, E., Gibbs, J. A. and Shapiro, A. (2017). Numerical study of nocturnal low-level jets over gently sloping terrain. *J. Atmos. Sci.*, 74, 2813-2834. https://doi.org/10.1175/JAS-D-17-0013.1
-* Maass, C. and Schumann, U. (1994). Numerical simulation of turbulent flow over a wavy boundary. In: *Direct and Large-Eddy Simulation I*, Kluwer, 287-297. https://doi.org/10.1007/978-94-011-1000-6_25
+* Maass, C. and Schumann, U. (1994). Numerical simulation of turbulent flow over a wavy boundary. In: *Direct and Large-Eddy Simulation I*, Kluwer, 287-297. (DOI not verified: 10.1007/978-94-011-1000-6_25)
 * Mason, P. J. and Thomson, D. J. (1992). Stochastic backscatter in large-eddy simulations of boundary layers. *J. Fluid Mech.*, 242, 51-78. https://doi.org/10.1017/S0022112092002271
+* Scotti, A., Meneveau, C. and Lilly, D. K. (1993). Generalized Smagorinsky model for anisotropic grids. *Phys. Fluids A*, 5, 2306-2308. (DOI not verified)
+* Simon, J. S. and Chow, F. K. (2021). Alternative anisotropic formulations for eddy-viscosity models in the Weather Research and Forecasting model. *Boundary-Layer Meteorol.*, 181, 11-37. https://doi.org/10.1007/s10546-021-00642-0
+* Skamarock, W. C. et al. (2019). A description of the Advanced Research WRF model version 4. NCAR Tech. Note NCAR/TN-556+STR. https://doi.org/10.5065/1dfh-6p97
 * Tseng, Y.-H. and Ferziger, J. H. (2003). A ghost-cell immersed boundary method for flow in complex geometry. *J. Comput. Phys.*, 192, 593-623. https://doi.org/10.1016/j.jcp.2003.07.024
 * van Heerwaarden, C. C. et al. (2017). MicroHH 1.0: a computational fluid dynamics code for direct numerical simulation and large-eddy simulation of atmospheric boundary layer flows. *Geosci. Model Dev.*, 10, 3145-3165. https://doi.org/10.5194/gmd-10-3145-2017
-* Yang, K., Koike, T., Ishikawa, H., Kim, J., Li, X., Liu, H., Liu, S., Ma, Y. and Wang, J. (2008). Turbulent flux transfer over bare-soil surfaces: characteristics and parameterization. *J. Appl. Meteorol. Climatol.*, 47, 276-290. https://doi.org/10.1175/2007JAMC1547.1
+* Yang, K., Koike, T., Ishikawa, H., Kim, J., Li, X., Liu, H., Liu, S., Ma, Y. and Wang, J. (2008). Turbulent flux transfer over bare-soil surfaces: characteristics and parameterization. *J. Appl. Meteorol. Climatol.*, 47, 276-290. (DOI not verified: 10.1175/2007JAMC1547.1)

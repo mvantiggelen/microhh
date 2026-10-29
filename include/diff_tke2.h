@@ -49,6 +49,12 @@ class Diff_tke2 : public Diff<TF>
         void diff_flux(Field3d<TF>&, const Field3d<TF>&);
         void exec_stats(Stats<TF>&, Thermo<TF>&); // Pass Thermo<TF>& also in other diffusion classes
 
+        void set_ib_wall_mason(
+                const std::vector<int>&, const std::vector<TF>&, const std::vector<TF>&);
+        void set_ib_wall_gradients(
+                const std::vector<int>&, const std::vector<TF>&,
+                const std::vector<TF>&, const std::vector<TF>&);
+
         #ifdef USECUDA
         void prepare_device(Boundary<TF>&);
         void clear_device();
@@ -87,6 +93,15 @@ class Diff_tke2 : public Diff<TF>
 
         bool sw_buoy;
         bool sw_mason;  ///< Switch for use of Mason's wall correction
+
+        // Immersed boundary: empty without one.
+        std::vector<int> ib_mason_ijk; ///< Air cells whose Mason length uses the distance to the IB surface
+        std::vector<TF> ib_mason_d;    ///< That distance [m]
+        std::vector<TF> ib_mason_z0;   ///< Roughness length of that surface [m]
+        std::vector<int> ib_wall_ijk;  ///< First air cell above an IB floor face
+        std::vector<TF> ib_wall_dudz;  ///< MOST du/dz in that cell [s-1]
+        std::vector<TF> ib_wall_dvdz;  ///< MOST dv/dz in that cell [s-1]
+        std::vector<TF> ib_wall_dbdz;  ///< MOST db/dz in that cell [s-2]
 
         const std::string tend_name = "diff";
         const std::string tend_longname = "Diffusion";

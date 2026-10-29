@@ -509,6 +509,145 @@ namespace
                 }
         }
     }
+
+    /*
+     * Immersed boundary. The first air cell above an IB floor face is an
+     * interior cell for the kernels above, so its vertical shear comes from
+     * the no-slip ghost below and its Mason length from the height above
+     * the domain floor. The three functions below give that cell (and the
+     * Mason length of every air cell over terrain) the treatment that the
+     * kernels give the first level above the domain floor.
+     */
+    template <typename TF>
+    void ib_wall_strain2(
+            TF* const restrict strain2,
+            const TF* const restrict u,
+            const TF* const restrict v,
+            const TF* const restrict w,
+            const std::vector<int>& wall_ijk,
+            const std::vector<TF>& dudz,
+            const std::vector<TF>& dvdz,
+            const TF* const restrict dzhi,
+            const TF dxi, const TF dyi,
+            const int jj, const int kk)
+    {
+        // Replace the du/dz + dw/dx and dv/dz + dw/dy terms of the interior
+        // expression of calc_strain2 by those of its Surface_model::Enabled
+        // branch: 0.5 (du/dz)^2 + 0.5 (dv/dz)^2 from MOST, and dw/dx, dw/dy.
+        const int ii = 1;
+
+        for (size_t n=0; n<wall_ijk.size(); ++n)
+        {
+            const int ijk = wall_ijk[n];
+            const int k = ijk / kk;
+
+            const TF interior =
+                  TF(0.125)*fm::pow2((u[ijk      ]-u[ijk   -kk])*dzhi[k  ] + (w[ijk      ]-w[ijk-ii   ])*dxi)
+                + TF(0.125)*fm::pow2((u[ijk+ii   ]-u[ijk+ii-kk])*dzhi[k  ] + (w[ijk+ii   ]-w[ijk      ])*dxi)
+                + TF(0.125)*fm::pow2((u[ijk   +kk]-u[ijk      ])*dzhi[k+1] + (w[ijk   +kk]-w[ijk-ii+kk])*dxi)
+                + TF(0.125)*fm::pow2((u[ijk+ii+kk]-u[ijk+ii   ])*dzhi[k+1] + (w[ijk+ii+kk]-w[ijk   +kk])*dxi)
+                + TF(0.125)*fm::pow2((v[ijk      ]-v[ijk   -kk])*dzhi[k  ] + (w[ijk      ]-w[ijk-jj   ])*dyi)
+                + TF(0.125)*fm::pow2((v[ijk+jj   ]-v[ijk+jj-kk])*dzhi[k  ] + (w[ijk+jj   ]-w[ijk      ])*dyi)
+                + TF(0.125)*fm::pow2((v[ijk   +kk]-v[ijk      ])*dzhi[k+1] + (w[ijk   +kk]-w[ijk-jj+kk])*dyi)
+                + TF(0.125)*fm::pow2((v[ijk+jj+kk]-v[ijk+jj   ])*dzhi[k+1] + (w[ijk+jj+kk]-w[ijk   +kk])*dyi);
+
+            const TF surface =
+                  TF(0.5) * fm::pow2(dudz[n])
+                + TF(0.125)*fm::pow2((w[ijk      ]-w[ijk-ii   ])*dxi)
+                + TF(0.125)*fm::pow2((w[ijk+ii   ]-w[ijk      ])*dxi)
+                + TF(0.125)*fm::pow2((w[ijk   +kk]-w[ijk-ii+kk])*dxi)
+                + TF(0.125)*fm::pow2((w[ijk+ii+kk]-w[ijk   +kk])*dxi)
+                + TF(0.5) * fm::pow2(dvdz[n])
+                + TF(0.125)*fm::pow2((w[ijk      ]-w[ijk-jj   ])*dyi)
+                + TF(0.125)*fm::pow2((w[ijk+jj   ]-w[ijk      ])*dyi)
+                + TF(0.125)*fm::pow2((w[ijk   +kk]-w[ijk-jj+kk])*dyi)
+                + TF(0.125)*fm::pow2((w[ijk+jj+kk]-w[ijk   +kk])*dyi);
+
+            strain2[ijk] += TF(2.) * (surface - interior);
+        }
+    }
+
+    template <typename TF>
+    TF ib_mason_length(
+            const TF a, const TF N2, const TF mlen0, const TF d, const TF z0,
+            const TF cn, const bool sw_stable)
+    {
+        // The length of calc_evisc and sgstke_diss_tend (Mason with n = 2),
+        // with the distance d to the IB surface in place of the height.
+        TF fac = mlen0;
+        if (sw_stable && N2 > TF(0))
+            fac = std::min(mlen0, cn * std::sqrt(a / N2));
+        return std::sqrt(TF(1.) / ( TF(1.)/fm::pow2(fac)
+                    + TF(1.)/fm::pow2(Constants::kappa<TF>*(d + z0)) ));
+    }
+
+    template <typename TF>
+    void ib_wall_evisc(
+            TF* const restrict evisc,
+            TF* const restrict evisch,
+            const TF* const restrict sgstke,
+            const TF* const restrict N2,
+            const std::vector<int>& mason_ijk,
+            const std::vector<TF>& mason_d,
+            const std::vector<TF>& mason_z0,
+            const TF* const restrict dz,
+            const TF dx, const TF dy,
+            const TF cn, const TF cm, const TF ch1, const TF ch2,
+            const int kk)
+    {
+        // evisch and N2 are nullptr without buoyancy (calc_evisc_neutral).
+        for (size_t n=0; n<mason_ijk.size(); ++n)
+        {
+            const int ijk = mason_ijk[n];
+            const int k = ijk / kk;
+            const TF mlen0 = std::pow(dx*dy*dz[k], TF(1./3.));
+            const TF n2 = (N2 != nullptr) ? N2[ijk] : TF(0);
+
+            const TF fac = ib_mason_length(
+                    sgstke[ijk], n2, mlen0, mason_d[n], mason_z0[n], cn, N2 != nullptr);
+
+            evisc[ijk] = cm * fac * std::sqrt(sgstke[ijk]);
+            if (evisch != nullptr)
+                evisch[ijk] = (ch1 + ch2 * fac / mlen0) * evisc[ijk];
+        }
+    }
+
+    template <typename TF>
+    void ib_wall_diss(
+            TF* const restrict at,
+            const TF* const restrict a,
+            const TF* const restrict N2,
+            const std::vector<int>& mason_ijk,
+            const std::vector<TF>& mason_d,
+            const std::vector<TF>& mason_z0,
+            const TF* const restrict z,
+            const TF* const restrict dz,
+            const TF* const restrict z0m,
+            const TF dx, const TF dy,
+            const TF cn, const TF ce1, const TF ce2,
+            const int kk)
+    {
+        // Swap the dissipation that sgstke_diss_tend(_neutral) added, with
+        // the height above the domain floor in Mason, for the one with the
+        // distance to the IB surface. N2 is nullptr without buoyancy.
+        for (size_t n=0; n<mason_ijk.size(); ++n)
+        {
+            const int ijk = mason_ijk[n];
+            const int k = ijk / kk;
+            const int ij = ijk - k*kk;
+            const TF mlen0 = std::pow(dx*dy*dz[k], TF(1./3.));
+            const TF n2 = (N2 != nullptr) ? N2[ijk] : TF(0);
+
+            const TF fac_z = ib_mason_length(
+                    a[ijk], n2, mlen0, z[k], z0m[ij], cn, N2 != nullptr);
+            const TF fac_d = ib_mason_length(
+                    a[ijk], n2, mlen0, mason_d[n], mason_z0[n], cn, N2 != nullptr);
+
+            const TF a32 = std::pow(a[ijk], TF(3./2.));
+            at[ijk] += (ce1 + ce2 * fac_z / mlen0) * a32 / fac_z
+                     - (ce1 + ce2 * fac_d / mlen0) * a32 / fac_d;
+        }
+    }
 }
 
 template<typename TF>
@@ -823,6 +962,17 @@ void Diff_tke2<TF>::exec_viscosity(Stats<TF>& stats, Thermo<TF>& thermo)
             gd.kstart, gd.kend,
             gd.icells, gd.ijcells);
 
+    if (!ib_wall_ijk.empty())
+        ib_wall_strain2<TF>(
+                str2_tmp->fld.data(),
+                fields.mp.at("u")->fld.data(),
+                fields.mp.at("v")->fld.data(),
+                fields.mp.at("w")->fld.data(),
+                ib_wall_ijk, ib_wall_dudz, ib_wall_dvdz,
+                gd.dzhi.data(),
+                1./gd.dx, 1./gd.dy,
+                gd.icells, gd.ijcells);
+
     // Start with retrieving the stability information
     if (!sw_buoy)
     {
@@ -852,6 +1002,19 @@ void Diff_tke2<TF>::exec_viscosity(Stats<TF>& stats, Thermo<TF>& thermo)
         else
             evisc_neutral_wrapper.template operator()<Surface_model::Enabled, false>();
 
+        const bool ib_mason = sw_mason && !ib_mason_ijk.empty();
+        if (ib_mason)
+        {
+            ib_wall_evisc<TF>(
+                    fields.sd.at("evisc")->fld.data(), nullptr,
+                    fields.sp.at("sgstke")->fld.data(), nullptr,
+                    ib_mason_ijk, ib_mason_d, ib_mason_z0,
+                    gd.dz.data(), gd.dx, gd.dy,
+                    this->cn, this->cm, this->ch1, this->ch2,
+                    gd.ijcells);
+            boundary_cyclic.exec(fields.sd.at("evisc")->fld.data());
+        }
+
         sgstke_diss_tend_neutral<TF>(
                 fields.st.at("sgstke")->fld.data(),
                 fields.sp.at("sgstke")->fld.data(),
@@ -868,6 +1031,16 @@ void Diff_tke2<TF>::exec_viscosity(Stats<TF>& stats, Thermo<TF>& thermo)
                 gd.icells, gd.ijcells,
                 sw_mason);
 
+        if (ib_mason)
+            ib_wall_diss<TF>(
+                    fields.st.at("sgstke")->fld.data(),
+                    fields.sp.at("sgstke")->fld.data(), nullptr,
+                    ib_mason_ijk, ib_mason_d, ib_mason_z0,
+                    gd.z.data(), gd.dz.data(), z0m.data(),
+                    gd.dx, gd.dy,
+                    this->cn, this->ce1, this->ce2,
+                    gd.ijcells);
+
                 stats.calc_tend(*fields.st.at("sgstke"), tend_name_diss);
     }
     else
@@ -876,6 +1049,11 @@ void Diff_tke2<TF>::exec_viscosity(Stats<TF>& stats, Thermo<TF>& thermo)
         auto buoy_tmp = fields.get_tmp();
         thermo.get_thermo_field(*buoy_tmp, "N2", false, false);
         const std::vector<TF>& dbdz = boundary.get_dbdz();
+
+        // The first air cell above an IB floor face: the MOST db/dz, as
+        // bgradbot at the domain floor.
+        for (size_t n=0; n<ib_wall_ijk.size(); ++n)
+            buoy_tmp->fld[ib_wall_ijk[n]] = ib_wall_dbdz[n];
 
         auto evisc_wrapper = [&]<Surface_model surface_model, bool sw_mason>()
         {
@@ -927,6 +1105,22 @@ void Diff_tke2<TF>::exec_viscosity(Stats<TF>& stats, Thermo<TF>& thermo)
             evisc_heat_wrapper.template operator()<Surface_model::Enabled, false>();
         }
 
+        const bool ib_mason = sw_mason && !ib_mason_ijk.empty();
+        if (ib_mason)
+        {
+            ib_wall_evisc<TF>(
+                    fields.sd.at("evisc")->fld.data(),
+                    fields.sd.at("eviscs")->fld.data(),
+                    fields.sp.at("sgstke")->fld.data(),
+                    buoy_tmp->fld.data(),
+                    ib_mason_ijk, ib_mason_d, ib_mason_z0,
+                    gd.dz.data(), gd.dx, gd.dy,
+                    this->cn, this->cm, this->ch1, this->ch2,
+                    gd.ijcells);
+            boundary_cyclic.exec(fields.sd.at("evisc")->fld.data());
+            boundary_cyclic.exec(fields.sd.at("eviscs")->fld.data());
+        }
+
         // BvS: I left the tendency calculations of sgstke here; feels a bit strange
         // to calculate them in `exec_viscosity`, but otherwise strain^2 has to be
         // recalculated in diff->exec()...
@@ -961,6 +1155,17 @@ void Diff_tke2<TF>::exec_viscosity(Stats<TF>& stats, Thermo<TF>& thermo)
                 gd.icells, gd.ijcells,
                 sw_mason);
 
+        if (ib_mason)
+            ib_wall_diss<TF>(
+                    fields.st.at("sgstke")->fld.data(),
+                    fields.sp.at("sgstke")->fld.data(),
+                    buoy_tmp->fld.data(),
+                    ib_mason_ijk, ib_mason_d, ib_mason_z0,
+                    gd.z.data(), gd.dz.data(), z0m.data(),
+                    gd.dx, gd.dy,
+                    this->cn, this->ce1, this->ce2,
+                    gd.ijcells);
+
         stats.calc_tend(*fields.st.at("sgstke"), tend_name_diss);
 
         fields.release_tmp(buoy_tmp);
@@ -982,6 +1187,36 @@ void Diff_tke2<TF>::exec_viscosity(Stats<TF>& stats, Thermo<TF>& thermo)
     fields.release_tmp(str2_tmp);
 }
 #endif
+
+template<typename TF>
+void Diff_tke2<TF>::set_ib_wall_mason(
+        const std::vector<int>& ijk, const std::vector<TF>& d, const std::vector<TF>& z0)
+{
+    // Air cells over immersed-boundary terrain: Mason's wall correction with
+    // the distance d to the IB surface (roughness z0) instead of the height
+    // above the domain floor. Static; set once.
+    if (ijk.size() != d.size() || ijk.size() != z0.size())
+        throw std::runtime_error("Diff_tke2::set_ib_wall_mason: sizes differ");
+    ib_mason_ijk = ijk;
+    ib_mason_d = d;
+    ib_mason_z0 = z0;
+}
+
+template<typename TF>
+void Diff_tke2<TF>::set_ib_wall_gradients(
+        const std::vector<int>& ijk, const std::vector<TF>& dudz,
+        const std::vector<TF>& dvdz, const std::vector<TF>& dbdz)
+{
+    // First air cells above immersed-boundary floor faces: the Monin-Obukhov
+    // du/dz, dv/dz and db/dz there, which replace the resolved vertical shear
+    // and N2 as at the first level above the domain floor. Set every substep.
+    if (ijk.size() != dudz.size() || ijk.size() != dvdz.size() || ijk.size() != dbdz.size())
+        throw std::runtime_error("Diff_tke2::set_ib_wall_gradients: sizes differ");
+    ib_wall_ijk = ijk;
+    ib_wall_dudz = dudz;
+    ib_wall_dvdz = dvdz;
+    ib_wall_dbdz = dbdz;
+}
 
 template<typename TF>
 void Diff_tke2<TF>::create_stats(Stats<TF>& stats)
