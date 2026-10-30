@@ -2258,6 +2258,16 @@ void Radiation_rrtmgp<TF>::set_ib_columns(
         if (gd.z[kk] <= zs && ilay < n_lay)
         {
             // Centre in the terrain: the fields there are IB ghost values.
+            // The level at the top of the cut layer (zh[kk+1], in the air)
+            // came from interp2(thl[kk], thl[kk+1]), i.e. half from the ghost
+            // value, which the wall model sets for its flux and which can be
+            // far from any air temperature when the surface is close to
+            // zh[kk+1]. Take it between T_s at the surface and the first air
+            // layer instead (linear in height), so no ghost value is used.
+            const TF t_air = t_lay({icol, ilay+1});
+            const TF w = (gd.zh[kk+1] - zs_c) / (gd.z[kk+1] - zs_c);
+            t_lev({icol, ilay+1}) = t_s + w*(t_air - t_s);
+
             const TF r = f * gd.dz[kk] / gd.dz[kk+1];
             t_lay({icol, ilay}) = TF(0.5)*(t_s + t_lev({icol, ilay+1}));
             h2o({icol, ilay}) = h2o({icol, ilay+1});

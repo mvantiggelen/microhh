@@ -279,6 +279,17 @@ surface, skin temperature and the temperatures at the bottom and the top
 (the top level comes from the ghost cell above the domain), and the range
 of the background column. Runs that do not fail are bit-identical.
 
+With `sw_ib_columns`, the level at the top of the layer cut by the surface
+(when the layer centre is inside the terrain) is interpolated linearly in
+height between the skin temperature at the surface and the first air layer
+(since 30 Oct 2026). Before, it was the average of the first air cell and the
+IB ghost cell below it; the ghost value is set for the wall flux and can be
+far from an air temperature when the surface lies close to that level (case003
+dom1: 358 K and 213 K, "tlev is out of range" at 600 s). In the idealised
+katabatic case this changes the downwelling longwave at the surface by up to
+15 W m-2 (mean -1.6 W m-2) in those columns, nothing elsewhere, and halves its
+column-to-column noise (2.2 -> 1.0 W m-2).
+
 ### Nesting
 
 | Section | Key | Default | Recommended | What it does |
