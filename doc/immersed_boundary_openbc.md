@@ -271,6 +271,14 @@ total hydrometeor mass at 1 h 20 % lower.
 |---|---|---|---|---|
 | `[radiation]` | `sw_ib_columns` | false | (true with rrtmgp over terrain) | RRTMGP columns start at the IB surface instead of the domain floor. |
 
+When RRTMGP stops with "tlay is out of range" or "tlev is out of range", the
+process where it happened first prints `RRTMGP range error on process ...`:
+the extremes of the layer and level temperatures with their (i, j), k (as in
+the 3-D dumps) and height, for the column furthest out of range its IB
+surface, skin temperature and the temperatures at the bottom and the top
+(the top level comes from the ghost cell above the domain), and the range
+of the background column. Runs that do not fail are bit-identical.
+
 ### Nesting
 
 | Section | Key | Default | Recommended | What it does |

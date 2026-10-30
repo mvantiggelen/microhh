@@ -25,6 +25,9 @@
 #include <string>
 #include <cmath>
 #include <stdexcept>
+#include <cstdio>
+#include <cmath>
+#include <limits>
 
 #include "radiation_rrtmgp.h"
 #include "radiation_rrtmgp_functions.h"
@@ -1974,6 +1977,11 @@ void Radiation_rrtmgp<TF>::exec(
         } // End try block.
         catch (std::exception& e)
         {
+            // RRTMGP only says that a temperature is out of its tables:
+            // say where, for the domain columns and the background column.
+            if (dynamic_cast<std::range_error*>(&e) != nullptr)
+                report_temperature_range(t_lay_a, t_lev_a, t_sfc_a);
+
             #ifdef USEMPI
             std::cout << "SINGLE PROCESS EXCEPTION: " << e.what() << std::endl;
             MPI_Abort(MPI_COMM_WORLD, 1);
@@ -2023,6 +2031,136 @@ void Radiation_rrtmgp<TF>::set_ib_surface(
     ib_get_tsurf = get_tsurf;
     if (sw_ib_columns)
         master.print_message("RRTMGP: columns start at the IB surface (sw_ib_columns)\n");
+}
+
+
+template<typename TF>
+void Radiation_rrtmgp<TF>::report_temperature_range(
+        const Array<Float,2>& t_lay, const Array<Float,2>& t_lev, const Array<Float,1>& t_sfc)
+{
+    /* Called on the process where RRTMGP threw a range_error ("tlay/tlev is
+       out of range"), before it stops. Prints, without any communication
+       (the other processes may not be here), the extremes of the layer and
+       level temperatures of the domain columns and of the background column,
+       and for the column with the extreme furthest out of range its IB surface,
+       skin temperature and the temperatures at the bottom and the top. */
+    auto& gd = grid.get_grid_data();
+    auto& md = master.get_MPI_data();
+
+    // The range of RRTMGP's absorption coefficient tables.
+    constexpr Float t_min = Float(160.);
+    constexpr Float t_max = Float(355.);
+
+    const int n_col = gd.imax*gd.jmax;
+    const int n_lay = gd.ktot;
+    const int n_lev = gd.ktot+1;
+
+    struct Extreme
+    {
+        Float value;
+        int icol;
+        int ik;
+    };
+
+    // Extremes of the finite values; a non-finite value is reported as both
+    // (the first one found), since RRTMGP rejects it as well.
+    auto find_extremes = [&](const Array<Float,2>& t, const int n_k)
+    {
+        Extreme lo = {std::numeric_limits<Float>::max(), 1, 1};
+        Extreme hi = {std::numeric_limits<Float>::lowest(), 1, 1};
+        for (int ik=1; ik<=n_k; ++ik)
+            for (int icol=1; icol<=n_col; ++icol)
+            {
+                const Float v = t({icol, ik});
+                if (!std::isfinite(v))
+                    return std::make_pair(Extreme{v, icol, ik}, Extreme{v, icol, ik});
+                if (v < lo.value)
+                    lo = {v, icol, ik};
+                if (v > hi.value)
+                    hi = {v, icol, ik};
+            }
+        return std::make_pair(lo, hi);
+    };
+
+    // Global (i, j) of a column, and the level as in the 3-D dumps (k from 0
+    // at the domain bottom, without ghost cells) with its height.
+    auto column = [&](const int icol)
+    {
+        const int n = icol-1;
+        const int i = n % gd.imax + md.mpicoordx*gd.imax;
+        const int j = n / gd.imax + md.mpicoordy*gd.jmax;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "(i,j)=(%d,%d)", i, j);
+        return std::string(buf);
+    };
+    auto where = [&](const int icol, const int ik, const bool half_level)
+    {
+        const int k = ik-1;
+        const TF z = half_level ? gd.zh[gd.kstart + k] : gd.z[gd.kstart + k];
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "%s k=%d %s=%.0f m",
+                column(icol).c_str(), k, half_level ? "zh" : "z", z);
+        return std::string(buf);
+    };
+
+    const auto lay = find_extremes(t_lay, n_lay);
+    const auto lev = find_extremes(t_lev, n_lev);
+
+    std::printf("RRTMGP range error on process %d (tables %.0f-%.0f K):\n", md.mpiid, t_min, t_max);
+    std::printf("  t_lay min %.6g K at %s, max %.6g K at %s\n",
+            lay.first.value, where(lay.first.icol, lay.first.ik, false).c_str(),
+            lay.second.value, where(lay.second.icol, lay.second.ik, false).c_str());
+    std::printf("  t_lev min %.6g K at %s, max %.6g K at %s\n",
+            lev.first.value, where(lev.first.icol, lev.first.ik, true).c_str(),
+            lev.second.value, where(lev.second.icol, lev.second.ik, true).c_str());
+
+    // The column of the extreme furthest outside the tables.
+    auto distance = [&](const Float v)
+    {
+        if (!std::isfinite(v))
+            return std::numeric_limits<Float>::max();
+        return std::max(t_min - v, v - t_max);
+    };
+    Extreme worst = lay.first;
+    for (const Extreme& e : {lay.second, lev.first, lev.second})
+        if (distance(e.value) > distance(worst.value))
+            worst = e;
+
+    const int icol = worst.icol;
+    const int n = icol-1;
+    const int ij = (n % gd.imax + gd.igc) + (n / gd.imax + gd.jgc)*gd.icells;
+    std::printf("  column %s, the furthest out of range:\n", column(icol).c_str());
+    if (sw_ib_columns && ib_dem != nullptr && ij < static_cast<int>(ib_dem->size()))
+        std::printf("    IB surface %.1f m, skin temperature %.6g K, t_sfc %.6g K\n",
+                (*ib_dem)[ij],
+                ij < static_cast<int>(ib_tsurf.size()) ? ib_tsurf[ij] : Float(-1),
+                t_sfc({icol}));
+    else
+        std::printf("    t_sfc %.6g K\n", t_sfc({icol}));
+    std::printf("    t_lev at the bottom %.6g K, t_lay at the bottom %.6g K\n",
+            t_lev({icol, 1}), t_lay({icol, 1}));
+    std::printf("    t_lay at the top %.6g K, t_lev at the top %.6g K (from the ghost cell above the top)\n",
+            t_lay({icol, n_lay}), t_lev({icol, n_lev}));
+
+    // The background column above the domain.
+    if (t_lay_col.size() > 0 && t_lev_col.size() > 0)
+    {
+        Float lay_lo = t_lay_col.ptr()[0], lay_hi = lay_lo;
+        for (int n=0; n<t_lay_col.size(); ++n)
+        {
+            lay_lo = std::min(lay_lo, t_lay_col.ptr()[n]);
+            lay_hi = std::max(lay_hi, t_lay_col.ptr()[n]);
+        }
+        Float lev_lo = t_lev_col.ptr()[0], lev_hi = lev_lo;
+        for (int n=0; n<t_lev_col.size(); ++n)
+        {
+            lev_lo = std::min(lev_lo, t_lev_col.ptr()[n]);
+            lev_hi = std::max(lev_hi, t_lev_col.ptr()[n]);
+        }
+        std::printf("  background column: t_lay %.6g .. %.6g K, t_lev %.6g .. %.6g K\n",
+                lay_lo, lay_hi, lev_lo, lev_hi);
+    }
+    std::fflush(stdout);
 }
 
 

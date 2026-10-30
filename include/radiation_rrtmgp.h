@@ -333,6 +333,10 @@ class Radiation_rrtmgp : public Radiation<TF>
                 Array<Float,2>&, Array<Float,2>&, Array<Float,2>&);
         void correct_ib_heating(Thermo<TF>&);
 
+        // Print where the temperatures given to RRTMGP are out of range.
+        void report_temperature_range(
+                const Array<Float,2>&, const Array<Float,2>&, const Array<Float,1>&);
+
         // Surface diffuse radiation filtering
         bool sw_diffuse_filter;
 
