@@ -315,6 +315,7 @@ void Model<TF>::load()
     pres->create(*stats);
     advec->create(*stats);
     diff->create(*stats, false);
+    ib->create_stats(*stats);
 
     thermo->create_stats(*stats);
     budget->create(*stats);
@@ -498,6 +499,7 @@ void Model<TF>::exec()
                 check("advec");
                 // Air-only scalar fluxes next to the terrain: [IB] sw_advec_wall.
                 ib->exec_advec_wall();
+                ib->calc_tend(*stats, "ib_advec");
                 boundary->set_ghost_cells_w(Boundary_w_type::Normal_type);
 
                 // Calculate the diffusion tendency.
@@ -512,6 +514,7 @@ void Model<TF>::exec()
                 // ... and the tangential stress, same pattern, on the u and v
                 // grids.
                 ib->exec_momentum_flux(*stats);
+                ib->calc_tend(*stats, "ib_wall");
                 check("ib_scalar_flux");
 
 
@@ -538,6 +541,7 @@ void Model<TF>::exec()
 
                 // Set the immersed boundary conditions
                 ib->exec_momentum();
+                ib->calc_tend(*stats, "ib_mom");
                 lbc->set_rock_flux(ib->get_rock_flux(0), ib->get_rock_flux(1));
 
                 // Solve the poisson equation for pressure.
@@ -558,6 +562,7 @@ void Model<TF>::exec()
                 // Keep the inside of the terrain at its blanked value
                 // through the RK update ([IB] sw_blank_solid_tend).
                 ib->exec_blank_solid_tend();
+                ib->calc_tend(*stats, "ib_solid");
 
                 // [IB] sw_flux_accum: integrate the surface fluxes and the
                 // drag of this stage, after the pressure solve so that p

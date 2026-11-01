@@ -236,6 +236,12 @@ class Immersed_boundary
         bool has_mask(std::string);
         void get_mask(Stats<TF>&, std::string);
 
+        // [IB] sw_ib_tend: the IB's own tendency profiles (ib_advec,
+        // ib_wall, ib_mom, ib_solid), so that the wall fluxes are not
+        // booked under the next process.
+        void create_stats(Stats<TF>&);
+        void calc_tend(Stats<TF>&, const std::string&);
+
         void prepare_device();
         void clear_device();
 
@@ -646,6 +652,13 @@ class Immersed_boundary
 
         // Statistics
         std::vector<std::string> available_masks;
+
+        // [IB] sw_ib_tend and [IB] xymasklist: IB tendencies in the
+        // statistics, and air-only masks "ib_<name>" from the xy files
+        // <name>.0000000 (the ib mask times the xy mask).
+        bool sw_ib_tend;
+        std::vector<std::string> ib_xymasklist;
+        std::map<std::string, std::vector<TF>> ib_xymasks;
 
         // Cross-sections
         std::vector<std::string> crosslist;

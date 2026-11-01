@@ -153,6 +153,8 @@ sw_flux_accum=true
 | `[IB]` | `columnlist` | empty | (as needed) | IB variables written as column output. |
 | `[IB]` | `diag_z_mom` | 10 | 10 | Height of the terrain-following wind diagnostics [m]. |
 | `[IB]` | `diag_z_scalar` | 2 | 2 | Height of the terrain-following scalar diagnostics [m]. |
+| `[IB]` | `sw_ib_tend` | false | true for budgets | Tendency profiles of the IB steps in the statistics: `<var>t_ib_advec`, `_ib_wall`, `_ib_mom`, `_ib_solid` (needs `[stats] swtendency=1`; output only). |
+| `[IB]` | `xymasklist` | empty | (as needed) | Air-only statistics masks `ib_<name>`: the `ib` mask restricted to the columns where the xy file `<name>.0000000` is > 0.5. List them in `[stats] masklist` (output only). |
 
 ### Surface diagnostics added on 28 Oct 2026
 
@@ -166,6 +168,76 @@ They are output only and do not change the simulation.
 | `ps_ib` | Pa | Base-state (hydrostatic) pressure at the surface height, log-linear between half levels; follows `swupdatebasestate`. |
 | `cloud_cover_ib` | - | 1 where an air cell of the column holds more than `cloud_cover_qc_min` of condensate; as an interval mean (`mean_crosslist`) the fraction of time with cloud. |
 | `sgs_tke` (in `[IB] columnlist`) | m2 s-2 | A profile: the prognostic SGS TKE with `tke2`, or (K_m / (c_m Δ))² from the eddy viscosity with `smag2`, as `calc_sgs_tke` (Deardorff 1980). |
+
+### Budget statistics over the terrain (1 Nov 2026)
+
+Two output-only additions for heat and momentum budgets of control volumes
+over the terrain (ice, tundra, distance bands from the ice margin). Neither
+changes the simulation; the prognostic fields stay bit-identical.
+
+**`[IB] sw_ib_tend`.** The IB steps run between the processes that write
+tendency statistics, and booked nothing of their own, so their effect was
+counted under the next process:
+
+| IB step | was booked under | now |
+|---|---|---|
+| `exec_advec_wall` (`sw_advec_wall`) | `diff` | `ib_advec` |
+| `exec_scalar_flux`, `exec_momentum_flux` (the MOST wall fluxes) | `damp` (the buffer) | `ib_wall` |
+| `exec_momentum` | `pres` | `ib_mom` |
+| `exec_impermeable`, `exec_blank_solid_tend` | the next process (limiter or `total`) | `ib_solid` |
+
+`ib_wall` is not the surface flux by itself: the wall model *undoes* the
+diffusion operator's flux across each terrain face and adds the MOST flux,
+so `ib_wall` = MOST - (operator flux across the terrain faces), and that
+operator flux is in `diff`. The surface exchange of a control volume is
+`ib_wall` + the `diff` part through the terrain; in the test below their sum
+over each mask matched the mean `hfss_ib` of the mask to 1 W m-2
+(`open_bc/les_eval/ib_budget.py`, term `surface_sgs`).
+
+In the `ib` mask of the idealised katabatic case, the old `thlt_damp` and
+`ut_damp` were *entirely* the wall fluxes, and 85 % of `ut_pres` was
+`exec_momentum`. With the switch, `damp`, `diff` and `pres` hold only their
+own physics; old profile = new profile + IB term to 3e-17.
+
+**`[IB] xymasklist`.** User xy masks in `[stats] xymasklist` include the
+cells inside the terrain, whose ghost layer carries advection and diffusion
+tendencies until `exec_blank_solid_tend` removes them. `[IB] xymasklist=a,b`
+reads `a.0000000`, `b.0000000` (the format of `dem.0000000`) and defines the
+masks `ib_a`, `ib_b`: the `ib` mask (air cells) in the columns where the file
+is > 0.5. Add them to `[stats] masklist`.
+
+**Fix in the `ib` mask.** `calc_mask` did not set the mask of the top half
+level (kend) or of the bottom face, which then held whatever the temporary
+field held before: the top level of the half-level `ib` statistics depended
+on the previous mask. Both are now set (top: air; bottom: the same test as
+every other half level). Only the top half level of the `ib` statistics can
+change.
+
+**Test** (`katabatic_idealised`, IB stage, 115 x 8 x 160 at 200 m, 1200 s;
+masks: upper slope x < 9 km, lower slope x >= 9 km, a band 8-12 km):
+
+- prognostic output bit-identical: old binary, new binary with the switches
+  off, new binary with them on; the `default` statistics byte-identical
+  between the old binary and the new one with the switches off;
+- old profile = new profile + IB term, to rounding (<= 3e-17);
+- `ib_upper` + `ib_lower` = `ib`: areas to 1e-16, area-weighted means of
+  tendencies, thl and u to rounding; `ib_band` lies within `ib`;
+- each mask's budget closes: sum of the process tendencies = `total` to
+  6e-16 for thl, qt and u in `ib_upper` and `ib_band`. `ib_lower` (and so
+  `ib`) keeps a residual of 0.8 % of the largest total at one level (k = 5,
+  the valley floor at the outflow), identical in the old binary: a step there
+  changes thl and qt without a tendency of its own (not the IB). Budget
+  masks should leave out the lateral sponge zone.
+- MPI (npx=5, 60 s): prognostic output bit-identical between the old and
+  the new binary with the switches off or on; old = new + IB term (0 for
+  thl, 7e-18 for u); `ib_upper` + `ib_lower` = `ib` to rounding.
+  NB: under MPI this case runs away from the serial run in both binaries
+  (dt 0.06 s against 5.8 s at t = 60 s; same with the old binary), so the
+  idealised katabatic case with `npx` > 1 needs a look of its own; the
+  dom1 runs (npx=16, npy=32) ran normally.
+- Covariances (`thl_w`, `thl_flux`) are about each mask's own mean, so they
+  do not add up over masks; the transport through a level is
+  `<w><thl> + <w'thl'>` per mask.
 
 ### tke2 over the terrain (29 Oct 2026)
 

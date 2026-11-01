@@ -1571,6 +1571,7 @@ namespace
     template<typename TF>
     void calc_mask(
             TF* const restrict mask, TF* const restrict maskh,
+            TF* const restrict maskh_bot,
             const TF* const restrict z_dem,
             const TF* const restrict z, const TF* const restrict zh,
             const int istart, const int iend,
@@ -1592,6 +1593,56 @@ namespace
                     mask[ijk]  = static_cast<TF>(is_not_ib);
                     maskh[ijk] = static_cast<TF>(is_not_ib_h);
                 }
+
+        // The top face (kend) is air, and the bottom face follows the
+        // same test as the other half levels. Without these, both kept
+        // whatever the temporary field held before (the top of the
+        // half-level ib statistics depended on the previous mask).
+        for (int j=jstart; j<jend; ++j)
+            #pragma ivdep
+            for (int i=istart; i<iend; ++i)
+            {
+                const int ij = i + j*jj;
+                maskh[ij + kend*kk] = TF(1);
+                maskh_bot[ij] = static_cast<TF>(zh[kstart] > z_dem[ij]);
+            }
+    }
+
+    template<typename TF>
+    void apply_xy_mask(
+            TF* const restrict mask, TF* const restrict maskh,
+            TF* const restrict mask_bot,
+            const TF* const restrict xymask,
+            const int istart, const int iend,
+            const int jstart, const int jend,
+            const int kstart, const int kend,
+            const int jj, const int kk)
+    {
+        // Restrict the air mask of calc_mask to the columns of an xy mask.
+        // maskh is also set at kend (the domain top is air), and mask_bot
+        // to the xy mask, which calc_mask leaves untouched.
+        for (int k=kstart; k<kend; ++k)
+            for (int j=jstart; j<jend; ++j)
+                #pragma ivdep
+                for (int i=istart; i<iend; ++i)
+                {
+                    const int ijk = i + j*jj + k*kk;
+                    const int ij  = i + j*jj;
+
+                    const TF in = xymask[ij] > TF(0.5) ? TF(1) : TF(0);
+                    mask[ijk]  *= in;
+                    maskh[ijk] *= in;
+                }
+
+        for (int j=jstart; j<jend; ++j)
+            #pragma ivdep
+            for (int i=istart; i<iend; ++i)
+            {
+                const int ij = i + j*jj;
+                const TF in = xymask[ij] > TF(0.5) ? TF(1) : TF(0);
+                maskh[ij + kend*kk] = in;
+                mask_bot[ij] = in;
+            }
     }
 
     template<typename TF>
@@ -1703,6 +1754,8 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
         std::string error = "\"" + sw_ib_str + "\" is an illegal value for \"sw_ib\"";
         throw std::runtime_error(error);
     }
+
+    sw_ib_tend = false;
 
     if (sw_ib != IB_type::Disabled)
     {
@@ -1945,6 +1998,16 @@ Immersed_boundary<TF>::Immersed_boundary(Master& masterin, Grid<TF>& gridin, Fie
 
         // Set available masks
         available_masks.insert(available_masks.end(), {"ib"});
+
+        // [IB] xymasklist: air-only masks "ib_<name>", the ib mask times
+        // the xy mask in <name>.0000000 (read in create()).
+        ib_xymasklist = inputin.get_list<std::string>(
+                "IB", "xymasklist", "", std::vector<std::string>());
+        for (auto& name : ib_xymasklist)
+            available_masks.push_back("ib_" + name);
+
+        // [IB] sw_ib_tend: tendency profiles of the IB steps.
+        sw_ib_tend = inputin.get_item<bool>("IB", "sw_ib_tend", "", false);
     }
 }
 
@@ -4964,6 +5027,27 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
         fields.release_tmp(tmp);
         boundary_cyclic.exec_2d(dem.data());
 
+        // [IB] xymasklist: the xy masks of the air-only statistics masks.
+        for (auto& name : ib_xymasklist)
+        {
+            std::vector<TF> xymask(gd.ijcells);
+            const std::string mask_file = name + ".0000000";
+            auto tmpm = fields.get_tmp();
+            master.print_message("Loading \"%s\" ... ", mask_file.c_str());
+
+            if (field3d_io.load_xy_slice(xymask.data(), tmpm->fld.data(), mask_file.c_str()))
+            {
+                master.print_message("FAILED\n");
+                throw std::runtime_error("Reading [IB] xymasklist file " + mask_file + " failed");
+            }
+            else
+                master.print_message("OK\n");
+
+            fields.release_tmp(tmpm);
+            boundary_cyclic.exec_2d(xymask.data());
+            ib_xymasks.emplace(name, std::move(xymask));
+        }
+
         if (sw_dem_halo_replicate)
         {
             const int jj = gd.icells;
@@ -5962,6 +6046,48 @@ void Immersed_boundary<TF>::create(Netcdf_handle& input_nc)
 }
 
 template<typename TF>
+void Immersed_boundary<TF>::create_stats(Stats<TF>& stats)
+{
+    if (sw_ib == IB_type::Disabled || !sw_ib_tend)
+        return;
+
+    // The IB steps between the processes that book their own tendency.
+    // Without these, a step's tendency ends up under the next process
+    // (exec_scalar_flux and exec_momentum_flux under the buffer "damp",
+    // exec_advec_wall under "diff", exec_momentum under "pres",
+    // exec_blank_solid_tend under the limiter or "total").
+    const std::vector<std::pair<std::string, std::string>> tends = {
+            {"ib_advec", "IB wall advection (sw_advec_wall)"},
+            {"ib_wall",  "IB wall fluxes (sw_scalar_flux, sw_momentum_flux)"},
+            {"ib_mom",   "IB momentum constraints (exec_momentum)"},
+            {"ib_solid", "IB impermeable faces and blanked terrain"}};
+
+    for (auto& t : tends)
+    {
+        stats.add_tendency(*fields.mt.at("u"), "z",  t.first, t.second);
+        stats.add_tendency(*fields.mt.at("v"), "z",  t.first, t.second);
+        stats.add_tendency(*fields.mt.at("w"), "zh", t.first, t.second);
+
+        for (auto& it : fields.st)
+            stats.add_tendency(*it.second, "z", t.first, t.second);
+    }
+}
+
+template<typename TF>
+void Immersed_boundary<TF>::calc_tend(Stats<TF>& stats, const std::string& tend_name)
+{
+    if (sw_ib == IB_type::Disabled || !sw_ib_tend)
+        return;
+
+    stats.calc_tend(*fields.mt.at("u"), tend_name);
+    stats.calc_tend(*fields.mt.at("v"), tend_name);
+    stats.calc_tend(*fields.mt.at("w"), tend_name);
+
+    for (auto& it : fields.st)
+        stats.calc_tend(*it.second, tend_name);
+}
+
+template<typename TF>
 bool Immersed_boundary<TF>::has_mask(std::string mask_name)
 {
     if (std::find(available_masks.begin(), available_masks.end(), mask_name) != available_masks.end())
@@ -5979,11 +6105,25 @@ void Immersed_boundary<TF>::get_mask(Stats<TF>& stats, std::string mask_name)
     auto maskh = fields.get_tmp();
 
     calc_mask(
-            mask->fld.data(), maskh->fld.data(), dem.data(), gd.z.data(), gd.zh.data(),
+            mask->fld.data(), maskh->fld.data(), maskh->fld_bot.data(),
+            dem.data(), gd.z.data(), gd.zh.data(),
             gd.istart, gd.iend, gd.jstart, gd.jend, gd.kstart, gd.kend,
             gd.icells, gd.ijcells);
 
-    stats.set_mask_thres("ib", *mask, *maskh, TF(0.5), Stats_mask_type::Plus);
+    if (mask_name == "ib")
+        stats.set_mask_thres("ib", *mask, *maskh, TF(0.5), Stats_mask_type::Plus);
+    else
+    {
+        // "ib_<name>": the air cells of the columns in the xy mask <name>.
+        const std::string name = mask_name.substr(3);
+        apply_xy_mask(
+                mask->fld.data(), maskh->fld.data(), maskh->fld_bot.data(),
+                ib_xymasks.at(name).data(),
+                gd.istart, gd.iend, gd.jstart, gd.jend, gd.kstart, gd.kend,
+                gd.icells, gd.ijcells);
+
+        stats.set_mask_thres(mask_name, *mask, *maskh, TF(0.5), Stats_mask_type::Plus);
+    }
 
     fields.release_tmp(mask );
     fields.release_tmp(maskh);
